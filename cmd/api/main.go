@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/wikiccu/biznes/internal/platform/config"
+	httpserver "github.com/wikiccu/biznes/internal/platform/http"
 )
 
 func main() {
@@ -18,5 +22,11 @@ func main() {
 	}
 
 	level.Set(cfg.LogLevel)
-	logger.Info("application initialized", "http_port", cfg.HTTPPort)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	server := httpserver.New(cfg, logger)
+	if err := httpserver.Run(ctx, server, cfg.HTTPShutdownTimeout, logger); err != nil {
+		logger.Error("HTTP server failed", "error", err)
+		os.Exit(1)
+	}
 }

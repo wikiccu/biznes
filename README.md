@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, minimal executable entry point, typed environment configuration, and structured JSON logging are implemented. HTTP serving, business features, third-party dependencies, database schema, Docker setup, and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, and Gin HTTP server lifecycle are implemented. Health/readiness endpoints, business features, database schema, Docker setup, and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -19,7 +19,7 @@ The blueprint is the living source of truth. Update it whenever a significant pr
 - Docker and Docker Compose for the local environment.
 - A modular monolith; add infrastructure and domain modules when an implemented requirement needs them.
 
-The Go module uses `github.com/wikiccu/biznes` and requires Go 1.27.1 or newer. Additional libraries will be selected during their respective implementation steps after checking current stable releases. Redis, AI providers, object storage, and background workers are future capabilities.
+The Go module uses `github.com/wikiccu/biznes` and requires Go 1.27.1 or newer. Gin is pinned to [v1.12.0](https://github.com/gin-gonic/gin/releases/tag/v1.12.0). Additional libraries will be selected during their respective implementation steps after checking current stable releases. Redis, AI providers, object storage, and background workers are future capabilities.
 
 ## Local development
 
@@ -29,7 +29,9 @@ Install [Go 1.27.1 or newer](https://go.dev/dl/) and Git. From the repository ro
 go run ./cmd/api
 ```
 
-It loads and validates configuration, emits an `INFO` initialization log with the selected HTTP port when the configured level permits it, and exits successfully. The entry point does not start an HTTP server yet. No database or Docker setup is required for this increment.
+It loads and validates configuration and keeps serving HTTP on port `8080` by default. Stop it with Ctrl+C; deployments can send SIGTERM. Shutdown stops accepting connections and allows in-flight requests to finish within the configured deadline, then closes remaining connections if the deadline expires. A shutdown failure exits with code `1`.
+
+No endpoints are registered yet, so `curl -i http://localhost:8080/` returns `404` with an `X-Request-ID` response header. Health and readiness endpoints are the next increment. No database or Docker setup is required for this increment.
 
 ### Configuration
 
@@ -39,6 +41,13 @@ Configuration comes from the process environment. [`.env.example`](.env.example)
 | --- | --- | --- |
 | `BIZNES_HTTP_PORT` | `8080` | Integer from `1` through `65535`. Empty, malformed, and out-of-range values fail startup with exit code `1`. |
 | `BIZNES_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` (case-insensitive). Empty, whitespace-padded, and unsupported values fail startup with exit code `1`. |
+| `BIZNES_HTTP_READ_HEADER_TIMEOUT` | `5s` | Positive Go duration. |
+| `BIZNES_HTTP_READ_TIMEOUT` | `15s` | Positive Go duration. |
+| `BIZNES_HTTP_WRITE_TIMEOUT` | `15s` | Positive Go duration. |
+| `BIZNES_HTTP_IDLE_TIMEOUT` | `60s` | Positive Go duration. |
+| `BIZNES_HTTP_SHUTDOWN_TIMEOUT` | `10s` | Positive Go duration. |
+
+Duration values use units such as `500ms`, `15s`, or `1m`. Empty, malformed, zero, negative, and overflowing durations fail startup with exit code `1`. Read/write settings are HTTP transport timeouts; they do not automatically cancel application work at that deadline.
 
 For example, in PowerShell:
 
@@ -58,9 +67,17 @@ Configuration errors identify the variable and constraint without echoing its va
 
 ### Logging
 
-The application uses standard-library `log/slog` to write one JSON object per line to stderr. Records include `time`, `level`, `msg`, and `service: "biznes"`; initialization adds `http_port`. Stdout remains available for application output.
+The application uses standard-library `log/slog` to write one JSON object per line to stderr. Records include `time`, `level`, `msg`, and `service: "biznes"`. Server lifecycle events identify listening, stopping, and stopped states. The listening event is emitted only after the port is bound successfully.
 
-The configured log level is the minimum severity: `warn` and `error` suppress the `INFO` initialization event. Startup configuration failures always emit an `ERROR` record and exit with code `1`, even when log-level configuration is invalid. Errors use fixed messages without recording supplied values or the full configuration.
+The configured log level is the minimum severity: `warn` and `error` suppress `INFO` lifecycle and ordinary request events. Requests record `request_id`, method, route template (empty for unmatched routes), status, and duration in milliseconds; responses with status `500` or higher are logged at `ERROR`. Query strings, raw URL paths, headers, bodies, and panic values are omitted from request and recovery logs.
+
+Startup configuration failures always emit an `ERROR` record and exit with code `1`, even when log-level configuration is invalid. Errors use fixed messages without recording supplied values or the full configuration. Gin's default debug/request/recovery output is disabled in favor of structured logging.
+
+### HTTP behavior
+
+Every handled request receives an `X-Request-ID`. A single supplied value is accepted if it contains 1–128 ASCII letters, digits, dots, underscores, or hyphens. Missing, duplicate, empty, or invalid values are replaced with a cryptographically random opaque ID. The ID is available as `request_id` in the Gin context and appears in the response header, request log, and recovered-panic error response.
+
+Recovery returns a safe `500` JSON error with code `internal_error` and a request ID, without exposing panic details or stack traces. Trusted proxy headers and automatic trailing-slash redirects are disabled. There are no placeholder business endpoints.
 
 ### Git workflow
 
@@ -90,10 +107,10 @@ git diff --check
 git status --short
 ```
 
-`go test ./...` currently checks package compilation; no test files exist yet. `gofmt -l cmd/api internal` should produce no output. The module uses only the standard library, so there is no `go.sum` yet.
+`go test ./...` currently checks package compilation; no project test files exist yet. `gofmt -l cmd/api internal` should produce no output. Gin and its transitive dependencies are recorded in `go.mod` and `go.sum`.
 
 Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing. Compose, migration, and other commands will be documented when their tools exist.
 
 ## Next increment
 
-Add the Gin HTTP server lifecycle, including timeouts, graceful shutdown, request IDs, recovery, and request logging, as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add `/health` and `/ready` with distinct liveness/readiness semantics as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
