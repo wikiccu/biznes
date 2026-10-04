@@ -7,7 +7,7 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 5 — Gin HTTP server lifecycle |
+| Current Increment | Step 6 — Health and readiness endpoints |
 | Last Updated | 2026-10-04 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,7 +16,7 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. Documentation, Go initialization, typed configuration, and structured logging are committed. The executable now runs a Gin HTTP server with transport timeouts, request IDs, request logging, panic recovery, and context-driven graceful shutdown. No endpoints are registered yet; requests return `404`.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. Documentation, Go initialization, typed configuration, structured logging, and the HTTP lifecycle are committed. The executable runs a Gin HTTP server with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, and `/health` and `/ready` endpoints. Unregistered paths return `404`.
 
 Implemented:
 
@@ -29,14 +29,15 @@ Implemented:
 - Gin v1.12.0 and the HTTP foundation in `internal/platform/http`. Read-header, read, write, idle, and shutdown timeouts default to `5s`, `15s`, `15s`, `60s`, and `10s`; their `BIZNES_HTTP_*_TIMEOUT` environment overrides must be positive Go durations.
 - Ctrl+C/SIGTERM shutdown that stops accepting connections, waits for in-flight requests within the deadline, and closes remaining connections on timeout. Startup binding, serving, and shutdown failures are reported as errors.
 - Bounded, validated `X-Request-ID` propagation with cryptographically random fallback IDs, structured completion logs using route templates instead of raw URLs, and safe recovered-panic `500` JSON responses. Gin debug output, trusted proxy headers, and automatic trailing-slash redirects are disabled.
+- `GET /health` returns `200` with `{"status":"ok"}` for process liveness. `GET /ready` returns `200` with `{"status":"ready"}` while the lifecycle context is active and `503` with `{"status":"not_ready"}` after shutdown begins for requests still served during draining. Both use `Cache-Control: no-store`; readiness observes the lifecycle without canceling request contexts. No dependency checks exist yet.
 
 Not implemented:
 
-- Health/readiness endpoints or shared business API error handling.
+- Shared business API error handling or dependency readiness checks.
 - PostgreSQL environment, migrations, Docker setup, developer tooling, or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Its documentation, Go initialization, typed configuration, structured logging, and HTTP lifecycle steps are complete. Health/readiness endpoints are next; database access remains planned. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Its documentation, Go initialization, typed configuration, structured logging, HTTP lifecycle, and health/readiness steps are complete. A local PostgreSQL Compose environment is next; database access remains planned. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -307,7 +308,7 @@ Use versioned REST APIs under `/api/v1/...`. Phase 0 provides `GET /health` with
 {"status":"ok"}
 ```
 
-It is a process health check unless documented otherwise. Database readiness, if later introduced, should have explicit semantics rather than making this response imply unimplemented checks. Do not create fake business endpoints or introduce GraphQL prematurely.
+It is a process liveness check without dependency checks. `GET /ready` returns `200` with `{"status":"ready"}` while the application lifecycle context is active, or `503` with `{"status":"not_ready"}` once shutdown begins. New connections may fail after the listener closes; requests still served during draining retain successful liveness responses. Both endpoints prevent caching and use the existing request ID and logging middleware. Add database readiness checks when the connection layer exists. Do not create fake business endpoints or introduce GraphQL prematurely.
 
 The following are initial conventions to implement and refine with the first real API:
 
@@ -427,7 +428,7 @@ Work in these reviewed increments:
 | 3 | Typed, environment-based configuration and `.env.example`. | Complete. |
 | 4 | Structured application logging. | Complete. |
 | 5 | Gin HTTP server lifecycle, timeouts, graceful shutdown, request ID, recovery, and request logging. | Complete. |
-| 6 | `/health` and `/ready` with distinct liveness/readiness semantics. | Not started. |
+| 6 | `/health` and `/ready` with distinct liveness/readiness semantics. | Complete. |
 | 7 | PostgreSQL local development environment with Compose. | Not started. |
 | 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Not started. |
 | 9 | Migration foundation with documented commands. | Not started. |
@@ -435,7 +436,7 @@ Work in these reviewed increments:
 | 11 | Formatting/linting and developer commands. | Not started. |
 | 12 | Go validation and CI foundation. | Not started. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the HTTP lifecycle, the next work is health and readiness endpoints. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After health and readiness endpoints, the next work is a local PostgreSQL Compose environment. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -541,7 +542,7 @@ Potential work includes a public API, expanded webhooks, partner integrations, a
 
 ### Validation and tests
 
-Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api internal`; running `go run ./cmd/api` starts the server. Check HTTP responses and request IDs, structured completion logs, safe configuration and binding failures, transport timeouts, and graceful shutdown with the built executable. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
+Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api internal`; running `go run ./cmd/api` starts the server. Check liveness/readiness responses during serving and shutdown, request IDs, structured completion logs, safe configuration and binding failures, transport timeouts, and graceful shutdown with the built executable. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
 
 Meaningful future tests should protect business invariants, database behavior, and important HTTP contracts rather than chase arbitrary coverage or mock everything. The global rule remains in effect: **do not create new test files or modify existing tests without explicit user authorization for that task**. Existing tests may be inspected and run when useful. No tests are being added in this step.
 
@@ -578,7 +579,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds the HTTP server lifecycle; health/readiness endpoints and database setup follow separately.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds health/readiness endpoints; database setup follows separately.
 
 ## Decisions & Changes
 

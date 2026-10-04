@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, and Gin HTTP server lifecycle are implemented. Health/readiness endpoints, business features, database schema, Docker setup, and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, and health/readiness endpoints are implemented. Business features, database schema, Docker setup, and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -31,7 +31,14 @@ go run ./cmd/api
 
 It loads and validates configuration and keeps serving HTTP on port `8080` by default. Stop it with Ctrl+C; deployments can send SIGTERM. Shutdown stops accepting connections and allows in-flight requests to finish within the configured deadline, then closes remaining connections if the deadline expires. A shutdown failure exits with code `1`.
 
-No endpoints are registered yet, so `curl -i http://localhost:8080/` returns `404` with an `X-Request-ID` response header. Health and readiness endpoints are the next increment. No database or Docker setup is required for this increment.
+Check the running server with:
+
+```text
+curl -i http://localhost:8080/health
+curl -i http://localhost:8080/ready
+```
+
+Both return JSON with an `X-Request-ID` response header and `Cache-Control: no-store`. No database or Docker setup is required yet.
 
 ### Configuration
 
@@ -75,6 +82,14 @@ Startup configuration failures always emit an `ERROR` record and exit with code 
 
 ### HTTP behavior
 
+| Endpoint | Response | Meaning |
+| --- | --- | --- |
+| `GET /health` | `200` with `{"status":"ok"}` | Process liveness; does not check dependencies. |
+| `GET /ready` | `200` with `{"status":"ready"}` | The HTTP application is running and its lifecycle context is active. |
+| `GET /ready` during shutdown | `503` with `{"status":"not_ready"}` | Shutdown has begun; readiness fails for requests that still reach the handler while connections drain. |
+
+Shutdown closes the listening socket, so new probe connections may fail instead of receiving a response. Liveness remains successful for requests served during draining, and readiness does not cancel in-flight request contexts. Database checks will be added to readiness when the connection layer exists. Unregistered paths, including `/`, return `404`.
+
 Every handled request receives an `X-Request-ID`. A single supplied value is accepted if it contains 1–128 ASCII letters, digits, dots, underscores, or hyphens. Missing, duplicate, empty, or invalid values are replaced with a cryptographically random opaque ID. The ID is available as `request_id` in the Gin context and appears in the response header, request log, and recovered-panic error response.
 
 Recovery returns a safe `500` JSON error with code `internal_error` and a request ID, without exposing panic details or stack traces. Trusted proxy headers and automatic trailing-slash redirects are disabled. There are no placeholder business endpoints.
@@ -113,4 +128,4 @@ Review new untracked files directly before staging; ordinary `git diff` does not
 
 ## Next increment
 
-Add `/health` and `/ready` with distinct liveness/readiness semantics as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add a PostgreSQL local development environment with Compose as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).

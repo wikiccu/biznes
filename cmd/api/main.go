@@ -24,7 +24,7 @@ func main() {
 	level.Set(cfg.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	server := httpserver.New(cfg, logger)
+	server := httpserver.New(ctx, cfg, logger)
 	if err := httpserver.Run(ctx, server, cfg.HTTPShutdownTimeout, logger); err != nil {
 		logger.Error("HTTP server failed", "error", err)
 		os.Exit(1)

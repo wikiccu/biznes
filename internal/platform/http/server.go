@@ -14,12 +14,26 @@ import (
 	"github.com/wikiccu/biznes/internal/platform/config"
 )
 
-func New(cfg config.Config, logger *slog.Logger) *http.Server {
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger) *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.RedirectTrailingSlash = false
 	_ = router.SetTrustedProxies(nil)
 	router.Use(requestID(), requestLogging(logger), recovery(logger))
+
+	router.GET("/health", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	router.GET("/ready", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		// Observe shutdown without canceling in-flight request contexts.
+		if ctx.Err() != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
 
 	return &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
