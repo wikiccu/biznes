@@ -7,7 +7,7 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 8 — PostgreSQL connection lifecycle and readiness |
+| Current Increment | Step 9 — Explicit SQL migration workflow |
 | Last Updated | 2026-10-05 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,7 +16,7 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The executable verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Unregistered paths return `404`.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, the `cmd/api` executable, and a separate `cmd/migrate` schema command. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The API verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Unregistered paths return `404`.
 
 Implemented:
 
@@ -32,14 +32,15 @@ Implemented:
 - `GET /health` returns `200` with `{"status":"ok"}` for process liveness. `GET /ready` returns `200` with `{"status":"ready"}` when the lifecycle is active and a bounded PostgreSQL ping succeeds, or `503` with `{"status":"not_ready"}` on dependency failure, timeout, or cancellation. Readiness observes request cancellation and shutdown without canceling other request contexts. Both use `Cache-Control: no-store`; readiness checks connectivity, not schema.
 - A local PostgreSQL environment in `compose.yaml`, pinned to the official `postgres:18.6-trixie` image. It publishes port `5432` on `127.0.0.1` by default, requires a non-empty development password, uses a named volume mounted at `/var/lib/postgresql`, checks TCP readiness with `pg_isready`, and allows 30 seconds for clean shutdown. `.env.example` documents Compose settings; Compose reads `.env`, while the Go API still uses only process environment configuration.
 - Native pgx v5.11.0 pooling in `internal/platform/database`. `BIZNES_DATABASE_URL` is required; `BIZNES_DATABASE_CONNECT_TIMEOUT` and `BIZNES_DATABASE_HEALTH_TIMEOUT` default to `5s` and `2s`, and must be positive durations. Native connection-string options configure the pool budget and lifecycle; invalid pool intervals/minimums fail startup safely. Startup verifies connectivity before HTTP binds. The pool remains available while HTTP drains and closes on success or HTTP failure. pgx may spend approximately 15 additional seconds cleaning up canceled connections to an unresponsive database. Connection strings, credentials, and raw driver errors are omitted from logs and probe responses.
+- An explicit SQL migration command in `cmd/migrate`, using Goose v3.26.0 and the existing pgx pool/configuration. It supports `up`, one-step `down`, and `status`, with PostgreSQL session advisory locking, transactional SQL/version recording, a positive work deadline (default `5m`), and Ctrl+C/SIGTERM cancellation. Cleanup can extend beyond the work deadline. Errors omit raw SQL and credentials; failed SQL migrations identify their version. The initial migration creates the `biznes` application namespace and refuses to drop it when non-empty. Goose owns `public.goose_db_version`; business tables are not implemented. `migrations/README.md` documents naming, commands, deployment permissions, failure handling, and rollback validation. The API never automatically migrates schema.
 
 Not implemented:
 
 - Shared business API error handling.
-- Migrations, API containerization, developer tooling, or CI.
+- API containerization, broader developer tooling, or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Steps 1–8 are implemented. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Validation uses isolated projects and removes their containers and volumes without changing existing databases. Migration tooling and its developer workflow are next. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Steps 1–9 are implemented. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Migration validation covers fresh history/status, apply/reapply, rollback/reapply, protection of existing schema/data, concurrent migration serialization, lock and SQL deadlines, signal cancellation, safe errors, and connection cleanup. Validation uses isolated projects and removes their containers and volumes without changing existing databases or creating test/fixture files. Versioned API conventions are next. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -275,7 +276,9 @@ Initial directory direction, introduced only as files become necessary:
 
 ```text
 biznes/
-├── cmd/api/
+├── cmd/
+│   ├── api/
+│   └── migrate/
 ├── internal/
 │   ├── platform/
 │   │   ├── config/
@@ -296,7 +299,7 @@ This is a planned shape, not the current repository tree. Avoid a single global 
 
 ## 7. Technical Direction
 
-The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Go 1.27.1, Gin v1.12.0, and [pgx v5.11.0](https://github.com/jackc/pgx/releases/tag/v5.11.0) are recorded in `go.mod`, with dependency checksums in `go.sum`; `compose.yaml` pins the official PostgreSQL image to `18.6-trixie`. PostgreSQL 18.6 is the current supported minor release verified against the [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/) and [official image tags](https://github.com/docker-library/docs/blob/master/postgres/README.md) at implementation time. Use native pgx pooling and explicit context-aware SQL operations; do not introduce an ORM or wrapper repository framework. Select supported stable versions for the remaining components and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
+The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Go 1.27.1, Gin v1.12.0, [pgx v5.11.0](https://github.com/jackc/pgx/releases/tag/v5.11.0), and [Goose v3.26.0](https://github.com/pressly/goose/releases/tag/v3.26.0) are recorded in `go.mod`, with dependency checksums in `go.sum`; `compose.yaml` pins the official PostgreSQL image to `18.6-trixie`. Goose uses a stable release compatible with the existing API dependency versions. PostgreSQL 18.6 is the current supported minor release verified against the [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/) and [official image tags](https://github.com/docker-library/docs/blob/master/postgres/README.md) at implementation time. Use native pgx pooling and explicit context-aware SQL operations; do not introduce an ORM or wrapper repository framework. Select supported stable versions for the remaining components and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
 
 Add a dependency only for a concrete need. Inspect current stable ecosystem conventions before choosing unspecified libraries, such as a database driver or migration tool. Use explicit migrations, never production ORM auto-sync.
 
@@ -349,7 +352,7 @@ Specify endpoint contracts with their implementation. Keep handlers thin: parse,
 
 ### Source of truth and ownership
 
-PostgreSQL is the initial authoritative store. Define constraints and indexes through reviewable migrations. Migration conventions and tooling are a separate Phase 0 increment; there is no schema yet.
+PostgreSQL is the initial authoritative store. Define constraints and indexes through reviewable migrations. The [migration workflow](../migrations/README.md) uses the pinned Goose library and explicit commands before deployment, with immutable sequential SQL files and transactional version recording. The initial migration creates the `biznes` namespace; qualify application objects as `biznes.<name>`. Goose's history table lives in `public`. There are no business tables yet, and database readiness still checks connectivity rather than schema version.
 
 ```text
 User ── Membership ── Organization
@@ -433,12 +436,12 @@ Work in these reviewed increments:
 | 6 | `/health` and `/ready` with distinct liveness/readiness semantics. | Complete. |
 | 7 | PostgreSQL local development environment with Compose. | Complete; runtime validation now passed. |
 | 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Complete. |
-| 9 | Migration foundation with documented commands. | Not started. |
+| 9 | Migration foundation with documented commands. | Complete; isolated PostgreSQL runtime validation passed. |
 | 10 | Versioned API response, error, validation, and pagination conventions. | Not started. |
 | 11 | Formatting/linting and developer commands. | Not started. |
 | 12 | Go validation and CI foundation. | Not started. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the PostgreSQL connection layer, the next work is migration tooling and its developer workflow. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the migration foundation, the next work is versioned API response, error, validation, and pagination conventions. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -544,7 +547,7 @@ Potential work includes a public API, expanded webhooks, partner integrations, a
 
 ### Validation and tests
 
-Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, `go mod verify`, and `gofmt -l cmd/api internal`; `go run ./cmd/api` starts the server when PostgreSQL and the required connection string are configured. Check liveness/readiness responses during serving, dependency outages/recovery, and shutdown, request IDs, structured logs, safe configuration/connection/binding failures, timeouts, cancellation, and pool cleanup with the built executable. Validate Compose with `docker compose config --quiet`; use isolated projects for authenticated SQL, pool limits, and persistence across container recreation. Allow for pgx's separate cleanup timeout when testing an unresponsive database. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
+Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, `go mod verify`, and `gofmt -l cmd internal`; `go run ./cmd/api` starts the server when PostgreSQL and the required connection string are configured. Check liveness/readiness responses during serving, dependency outages/recovery, and shutdown, request IDs, structured logs, safe configuration/connection/binding failures, timeouts, cancellation, and pool cleanup with the built executable. Validate Compose with `docker compose config --quiet`; use isolated projects for authenticated SQL, pool limits, and persistence across container recreation. Validate migration status, apply/reapply, safe rollback and failure behavior, concurrent execution, cancellation/deadlines, schema/history consistency, and connection cleanup against isolated PostgreSQL. Allow for separate driver/lock cleanup when testing cancellation. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
 
 Meaningful future tests should protect business invariants, database behavior, and important HTTP contracts rather than chase arbitrary coverage or mock everything. The global rule remains in effect: **do not create new test files or modify existing tests without explicit user authorization for that task**. Existing tests may be inspected and run when useful. No tests are being added in this step.
 
@@ -581,7 +584,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds PostgreSQL connections and dependency readiness; migration tooling follows separately.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds explicit migration tooling and its developer workflow; API conventions follow separately.
 
 ## Decisions & Changes
 
@@ -598,5 +601,6 @@ Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete
 | 2026-10-04 | Authorize one validated commit and push per turn on `main`, then wait for `continue`. | The autonomous development protocol supersedes the earlier manual-commit workflow; preserve unrelated work and never merge automatically. |
 | 2026-10-04 | Initialize `github.com/wikiccu/biznes` with Go 1.27.1 and a minimal `cmd/api` executable. | Derive the module path from the configured GitHub remote; introduce dependencies and runtime capabilities only in their own increments. |
 | 2026-10-05 | Use native pgx v5.11.0 pooling, a required API connection string, and a bounded database readiness ping. | Reuse driver connection/pool/TLS settings, verify the dependency before HTTP starts, keep process liveness independent during outages, and close the pool after HTTP drains. |
+| 2026-10-05 | Use Goose v3.26.0 through an explicit `cmd/migrate` command; create a `biznes` application namespace and keep version history in `public`. | A mature context-aware migration provider with native PostgreSQL advisory locking; pin this stable release to preserve existing API dependency versions. Schema changes and rollback are explicit, versioned, and transactional; the initial rollback protects non-empty schemas. No schema auto-sync or business tables. |
 
 For future major changes, add the date, decision, reason, affected capabilities/phases, and any migration implications. Update the relevant sections and Current State together so the blueprint continues to describe both the destination and the actual repository.

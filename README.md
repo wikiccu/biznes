@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, and PostgreSQL connection pool are implemented. Migrations, business features, and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, and explicit SQL migration workflow are implemented. Business features and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -19,13 +19,14 @@ The blueprint is the living source of truth. Update it whenever a significant pr
 - Docker and Docker Compose for the local environment.
 - A modular monolith; add infrastructure and domain modules when an implemented requirement needs them.
 
-The Go module uses `github.com/wikiccu/biznes` and requires Go 1.27.1 or newer. Gin is pinned to [v1.12.0](https://github.com/gin-gonic/gin/releases/tag/v1.12.0), and the PostgreSQL driver/pool is [pgx v5.11.0](https://github.com/jackc/pgx/releases/tag/v5.11.0). Additional libraries will be selected during their respective implementation steps after checking current stable releases. Redis, AI providers, object storage, and background workers are future capabilities.
+The Go module uses `github.com/wikiccu/biznes` and requires Go 1.27.1 or newer. Gin is pinned to [v1.12.0](https://github.com/gin-gonic/gin/releases/tag/v1.12.0), the PostgreSQL driver/pool is [pgx v5.11.0](https://github.com/jackc/pgx/releases/tag/v5.11.0), and migrations use [Goose v3.26.0](https://github.com/pressly/goose/releases/tag/v3.26.0). Goose is pinned to this stable version to preserve existing API dependency versions. Additional libraries will be selected during their respective implementation steps after checking current stable releases. Redis, AI providers, object storage, and background workers are future capabilities.
 
 ## Local development
 
-Install [Go 1.27.1 or newer](https://go.dev/dl/) and Git. Start PostgreSQL using the local development instructions below, then set `BIZNES_DATABASE_URL` in the API process environment with the matching database, user, password, and host port. From the repository root, run:
+Install [Go 1.27.1 or newer](https://go.dev/dl/) and Git. Start PostgreSQL using the local development instructions below, then set `BIZNES_DATABASE_URL` in the process environment with the matching database, user, password, and host port. Apply migrations explicitly before running the API. From the repository root, run:
 
 ```text
+go run ./cmd/migrate up
 go run ./cmd/api
 ```
 
@@ -69,6 +70,18 @@ docker compose down
 Inside `psql`, run `SELECT current_database(), current_user, version();` and quit with `\q`. Host clients connect to `127.0.0.1`, the configured host port, and the database/user/password above. The health check verifies that PostgreSQL accepts connections; it does not verify application schema or credentials.
 
 The `biznes_postgres_data` volume retains data across container recreation and `docker compose down`. It is mounted at `/var/lib/postgresql`, as required by the PostgreSQL 18 image layout. Changing initialization credentials in `.env` does not change an existing database; use SQL to update an existing role. Major version upgrades require an explicit data migration. Do not use `down --volumes` unless you intend to delete the local database.
+
+### Database migrations
+
+The [migration workflow](migrations/README.md) uses the pinned Goose library through `cmd/migrate`, reusing pgx and the same environment configuration. It provides `up`, one-step `down`, and `status`, with PostgreSQL advisory locking, transactional SQL, a work deadline, and Ctrl+C/SIGTERM cancellation. It never runs automatically on API startup.
+
+```text
+go run ./cmd/migrate status
+go run ./cmd/migrate up
+go run ./cmd/migrate status
+```
+
+The initial migration creates the `biznes` schema for future application objects; Goose tracks versions in `public.goose_db_version`. There are no business tables yet. Rollbacks are explicit and may affect data; the initial rollback refuses to drop a non-empty schema. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### Configuration
 
@@ -155,16 +168,16 @@ git log --oneline -n 10
 ```text
 go test ./...
 go vet ./...
-gofmt -l cmd/api internal
+gofmt -l cmd internal
 git diff
 git diff --check
 git status --short
 ```
 
-`go test ./...` currently checks package compilation; no project test files exist yet. `gofmt -l cmd/api internal` should produce no output. Gin, pgx, and their transitive dependencies are recorded in `go.mod` and `go.sum`.
+`go test ./...` currently checks package compilation; no project test files exist yet. `gofmt -l cmd internal` should produce no output. Gin, pgx, Goose, and their transitive dependencies are recorded in `go.mod` and `go.sum`.
 
-Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing. Compose commands are documented above; migration and other commands will accompany their tools.
+Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing. Compose and migration commands are documented above; broader developer commands will accompany their tools.
 
 ## Next increment
 
-Add migration tooling and its developer workflow as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Establish versioned API response, error, validation, and pagination conventions as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
