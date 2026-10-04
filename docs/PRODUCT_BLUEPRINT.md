@@ -7,8 +7,8 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 6 — Health and readiness endpoints |
-| Last Updated | 2026-10-04 |
+| Current Increment | Step 7 — Local PostgreSQL Compose environment |
+| Last Updated | 2026-10-05 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
 
@@ -30,14 +30,15 @@ Implemented:
 - Ctrl+C/SIGTERM shutdown that stops accepting connections, waits for in-flight requests within the deadline, and closes remaining connections on timeout. Startup binding, serving, and shutdown failures are reported as errors.
 - Bounded, validated `X-Request-ID` propagation with cryptographically random fallback IDs, structured completion logs using route templates instead of raw URLs, and safe recovered-panic `500` JSON responses. Gin debug output, trusted proxy headers, and automatic trailing-slash redirects are disabled.
 - `GET /health` returns `200` with `{"status":"ok"}` for process liveness. `GET /ready` returns `200` with `{"status":"ready"}` while the lifecycle context is active and `503` with `{"status":"not_ready"}` after shutdown begins for requests still served during draining. Both use `Cache-Control: no-store`; readiness observes the lifecycle without canceling request contexts. No dependency checks exist yet.
+- A local PostgreSQL environment in `compose.yaml`, pinned to the official `postgres:18.6-trixie` image. It publishes port `5432` on `127.0.0.1` by default, requires a non-empty development password, uses a named volume mounted at `/var/lib/postgresql`, checks TCP readiness with `pg_isready`, and allows 30 seconds for clean shutdown. `.env.example` documents Compose settings; Compose reads `.env`, while the Go API still uses only process environment configuration.
 
 Not implemented:
 
 - Shared business API error handling or dependency readiness checks.
-- PostgreSQL environment, migrations, Docker setup, developer tooling, or CI.
+- PostgreSQL application connections, migrations, API containerization, developer tooling, or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Its documentation, Go initialization, typed configuration, structured logging, HTTP lifecycle, and health/readiness steps are complete. A local PostgreSQL Compose environment is next; database access remains planned. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Its documentation, Go initialization, typed configuration, structured logging, HTTP lifecycle, and health/readiness steps are complete. The local PostgreSQL Compose configuration is implemented and validated; runtime startup, SQL, authentication, and persistence checks remain pending because Docker Hub image downloads returned a country-blocking `403`, and Google's documented Docker Hub cache also returned `403`. The isolated validation project was removed without changing existing databases. Rerun those checks when the pinned image is available; PostgreSQL connection lifecycle, pooling, and dependency readiness checks are the next implementation increment. The API currently runs independently of the development database. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -294,7 +295,7 @@ This is a planned shape, not the current repository tree. Avoid a single global 
 
 ## 7. Technical Direction
 
-The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Go 1.27.1 and Gin v1.12.0 are recorded in `go.mod`, with dependency checksums in `go.sum`. Select supported stable versions for the remaining components at implementation time and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
+The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Go 1.27.1 and Gin v1.12.0 are recorded in `go.mod`, with dependency checksums in `go.sum`; `compose.yaml` pins the official PostgreSQL image to `18.6-trixie`. PostgreSQL 18.6 is the current supported minor release verified against the [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/) and [official image tags](https://github.com/docker-library/docs/blob/master/postgres/README.md) at implementation time. Select supported stable versions for the remaining components and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
 
 Add a dependency only for a concrete need. Inspect current stable ecosystem conventions before choosing unspecified libraries, such as a database driver or migration tool. Use explicit migrations, never production ORM auto-sync.
 
@@ -429,14 +430,14 @@ Work in these reviewed increments:
 | 4 | Structured application logging. | Complete. |
 | 5 | Gin HTTP server lifecycle, timeouts, graceful shutdown, request ID, recovery, and request logging. | Complete. |
 | 6 | `/health` and `/ready` with distinct liveness/readiness semantics. | Complete. |
-| 7 | PostgreSQL local development environment with Compose. | Not started. |
+| 7 | PostgreSQL local development environment with Compose. | Implemented; Compose validation passed, runtime checks blocked by image-download `403`. |
 | 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Not started. |
 | 9 | Migration foundation with documented commands. | Not started. |
 | 10 | Versioned API response, error, validation, and pagination conventions. | Not started. |
 | 11 | Formatting/linting and developer commands. | Not started. |
 | 12 | Go validation and CI foundation. | Not started. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After health and readiness endpoints, the next work is a local PostgreSQL Compose environment. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the local PostgreSQL Compose environment, the next work is PostgreSQL application connections and dependency readiness checks. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -542,7 +543,7 @@ Potential work includes a public API, expanded webhooks, partner integrations, a
 
 ### Validation and tests
 
-Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api internal`; running `go run ./cmd/api` starts the server. Check liveness/readiness responses during serving and shutdown, request IDs, structured completion logs, safe configuration and binding failures, transport timeouts, and graceful shutdown with the built executable. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
+Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api internal`; running `go run ./cmd/api` starts the server. Check liveness/readiness responses during serving and shutdown, request IDs, structured completion logs, safe configuration and binding failures, transport timeouts, and graceful shutdown with the built executable. Validate Compose with `docker compose config --quiet`; when a Docker engine is available, check database startup, readiness, SQL access, and persistence across container recreation using an isolated project and volume. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
 
 Meaningful future tests should protect business invariants, database behavior, and important HTTP contracts rather than chase arbitrary coverage or mock everything. The global rule remains in effect: **do not create new test files or modify existing tests without explicit user authorization for that task**. Existing tests may be inspected and run when useful. No tests are being added in this step.
 
@@ -579,7 +580,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds health/readiness endpoints; database setup follows separately.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds local PostgreSQL with Compose; application database access and migrations follow separately.
 
 ## Decisions & Changes
 

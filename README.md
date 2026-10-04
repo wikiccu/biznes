@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, and health/readiness endpoints are implemented. Business features, database schema, Docker setup, and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, and a local PostgreSQL Compose environment are implemented. Database connections, migrations, business features, and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -38,11 +38,41 @@ curl -i http://localhost:8080/health
 curl -i http://localhost:8080/ready
 ```
 
-Both return JSON with an `X-Request-ID` response header and `Cache-Control: no-store`. No database or Docker setup is required yet.
+Both return JSON with an `X-Request-ID` response header and `Cache-Control: no-store`. The API currently runs independently of PostgreSQL; database connections and dependency readiness checks are the next increment.
+
+### Local PostgreSQL
+
+Install Docker with the Compose v2 plugin and start its Linux container engine (for example, Docker Desktop). [compose.yaml](compose.yaml) pins the [official PostgreSQL image](https://github.com/docker-library/docs/blob/master/postgres/README.md) to `18.6-trixie`, with a named volume and a TCP readiness check. PostgreSQL is published only on `127.0.0.1`, using host port `5432` by default.
+
+Copy `.env.example` to `.env` if the file does not already exist. Set `BIZNES_POSTGRES_PASSWORD` to a local development password before running Compose; an absent or empty password fails configuration. Keep `.env` private. The image creates a development superuser, so these settings are for local development only.
+
+| Compose variable | Default when absent | Purpose |
+| --- | --- | --- |
+| `BIZNES_POSTGRES_PORT` | `5432` | Host port on `127.0.0.1`; change it if another database uses this port. |
+| `BIZNES_POSTGRES_DB` | `biznes` | Database created on first initialization. |
+| `BIZNES_POSTGRES_USER` | `biznes` | Development superuser created on first initialization. |
+| `BIZNES_POSTGRES_PASSWORD` | Required, non-empty | Password set on first initialization. |
+
+Compose reads `.env` automatically; process environment values take precedence. These PostgreSQL settings are not consumed by the Go API yet. Use `docker compose config --quiet` to validate without printing the resolved password.
+
+From the repository root:
+
+```text
+docker compose config --quiet
+docker compose up -d --wait --wait-timeout 60 postgres
+docker compose ps
+docker compose logs --tail 50 postgres
+docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+docker compose down
+```
+
+Inside `psql`, run `SELECT current_database(), current_user, version();` and quit with `\q`. Host clients connect to `127.0.0.1`, the configured host port, and the database/user/password above. The health check verifies that PostgreSQL accepts connections; it does not verify application schema or credentials.
+
+The `biznes_postgres_data` volume retains data across container recreation and `docker compose down`. It is mounted at `/var/lib/postgresql`, as required by the PostgreSQL 18 image layout. Changing initialization credentials in `.env` does not change an existing database; use SQL to update an existing role. Major version upgrades require an explicit data migration. Do not use `down --volumes` unless you intend to delete the local database.
 
 ### Configuration
 
-Configuration comes from the process environment. [`.env.example`](.env.example) lists the supported variables; env files are not loaded automatically. Local `.env` and `.env.*` files are ignored by Git, with `.env.example` retained as the committed example.
+API configuration comes from the process environment. [`.env.example`](.env.example) lists API and local Compose settings; the Go application does not load env files automatically. Local `.env` and `.env.*` files are ignored by Git, with `.env.example` retained as the committed example.
 
 | Variable | Default when absent | Validation |
 | --- | --- | --- |
@@ -70,7 +100,7 @@ Or in a POSIX shell:
 BIZNES_HTTP_PORT=9000 go run ./cmd/api
 ```
 
-Configuration errors identify the variable and constraint without echoing its value. No credentials are required at this stage; additional settings will accompany the capabilities that use them.
+Configuration errors identify the variable and constraint without echoing its value. The Go API currently requires no credentials; PostgreSQL's separate local development settings are documented above.
 
 ### Logging
 
@@ -124,8 +154,8 @@ git status --short
 
 `go test ./...` currently checks package compilation; no project test files exist yet. `gofmt -l cmd/api internal` should produce no output. Gin and its transitive dependencies are recorded in `go.mod` and `go.sum`.
 
-Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing. Compose, migration, and other commands will be documented when their tools exist.
+Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing. Compose commands are documented above; migration and other commands will accompany their tools.
 
 ## Next increment
 
-Add a PostgreSQL local development environment with Compose as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add PostgreSQL connection lifecycle, pooling, and dependency readiness checks as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
