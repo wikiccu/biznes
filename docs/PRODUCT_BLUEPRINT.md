@@ -7,7 +7,7 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 9 — Explicit SQL migration workflow |
+| Current Increment | Step 10 — API conventions and shared HTTP errors |
 | Last Updated | 2026-10-05 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,7 +16,7 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, the `cmd/api` executable, and a separate `cmd/migrate` schema command. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The API verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Unregistered paths return `404`.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, the `cmd/api` executable, and a separate `cmd/migrate` schema command. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The API verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Shared errors return JSON `404` for unknown routes and `405` with `Allow` for unsupported methods on registered paths. Business API contracts are documented without placeholder endpoints.
 
 Implemented:
 
@@ -28,19 +28,20 @@ Implemented:
 - Standard-library JSON logging to stderr with timestamp, severity, message, and `service: "biznes"`. `BIZNES_LOG_LEVEL` defaults to `info` and accepts case-insensitive `debug`, `info`, `warn`, and `error`; empty, whitespace-padded, and unsupported values are invalid. Configuration failures are always logged at `ERROR` without echoing supplied values or dumping configuration.
 - Gin v1.12.0 and the HTTP foundation in `internal/platform/http`. Read-header, read, write, idle, and shutdown timeouts default to `5s`, `15s`, `15s`, `60s`, and `10s`; their `BIZNES_HTTP_*_TIMEOUT` environment overrides must be positive Go durations.
 - Ctrl+C/SIGTERM shutdown that stops accepting connections, waits for in-flight requests within the deadline, and closes remaining connections on timeout. Startup binding, serving, and shutdown failures are reported as errors.
-- Bounded, validated `X-Request-ID` propagation with cryptographically random fallback IDs, structured completion logs using route templates instead of raw URLs, and safe recovered-panic `500` JSON responses. Gin debug output, trusted proxy headers, and automatic trailing-slash redirects are disabled.
+- Bounded, validated `X-Request-ID` propagation with cryptographically random fallback IDs, structured completion logs using route templates instead of raw URLs, and safe recovered-panic `500` JSON responses before response commitment. Gin debug output, trusted proxy headers, and automatic trailing-slash redirects are disabled.
 - `GET /health` returns `200` with `{"status":"ok"}` for process liveness. `GET /ready` returns `200` with `{"status":"ready"}` when the lifecycle is active and a bounded PostgreSQL ping succeeds, or `503` with `{"status":"not_ready"}` on dependency failure, timeout, or cancellation. Readiness observes request cancellation and shutdown without canceling other request contexts. Both use `Cache-Control: no-store`; readiness checks connectivity, not schema.
 - A local PostgreSQL environment in `compose.yaml`, pinned to the official `postgres:18.6-trixie` image. It publishes port `5432` on `127.0.0.1` by default, requires a non-empty development password, uses a named volume mounted at `/var/lib/postgresql`, checks TCP readiness with `pg_isready`, and allows 30 seconds for clean shutdown. `.env.example` documents Compose settings; Compose reads `.env`, while the Go API still uses only process environment configuration.
 - Native pgx v5.11.0 pooling in `internal/platform/database`. `BIZNES_DATABASE_URL` is required; `BIZNES_DATABASE_CONNECT_TIMEOUT` and `BIZNES_DATABASE_HEALTH_TIMEOUT` default to `5s` and `2s`, and must be positive durations. Native connection-string options configure the pool budget and lifecycle; invalid pool intervals/minimums fail startup safely. Startup verifies connectivity before HTTP binds. The pool remains available while HTTP drains and closes on success or HTTP failure. pgx may spend approximately 15 additional seconds cleaning up canceled connections to an unresponsive database. Connection strings, credentials, and raw driver errors are omitted from logs and probe responses.
 - An explicit SQL migration command in `cmd/migrate`, using Goose v3.26.0 and the existing pgx pool/configuration. It supports `up`, one-step `down`, and `status`, with PostgreSQL session advisory locking, transactional SQL/version recording, a positive work deadline (default `5m`), and Ctrl+C/SIGTERM cancellation. Cleanup can extend beyond the work deadline. Errors omit raw SQL and credentials; failed SQL migrations identify their version. The initial migration creates the `biznes` application namespace and refuses to drop it when non-empty. Goose owns `public.goose_db_version`; business tables are not implemented. `migrations/README.md` documents naming, commands, deployment permissions, failure handling, and rollback validation. The API never automatically migrates schema.
+- A shared HTTP `WriteError` helper and `ErrorDetail` type in `internal/platform/http/response.go`. Routing and panic recovery use stable public codes, safe messages, optional field/code details, and the middleware's request ID, with JSON content type and `Cache-Control: no-store`. The writer aborts without appending an error or replacing a committed response. Gin supplies `Allow` for method errors. `docs/API_CONVENTIONS.md` defines `/api/v1`, success envelopes, status/error mappings, strict bounded JSON input, validation, bounded page/limit pagination, timestamps, IDs, and money representations. Resource-specific input decoding, validation, success DTOs, and pagination remain work for their first real endpoints.
 
 Not implemented:
 
-- Shared business API error handling.
+- Business request decoding, resource validation, success DTOs, and pagination handlers.
 - API containerization, broader developer tooling, or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Steps 1–9 are implemented. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Migration validation covers fresh history/status, apply/reapply, rollback/reapply, protection of existing schema/data, concurrent migration serialization, lock and SQL deadlines, signal cancellation, safe errors, and connection cleanup. Validation uses isolated projects and removes their containers and volumes without changing existing databases or creating test/fixture files. Versioned API conventions are next. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Steps 1–10 are complete. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Migration validation covers fresh history/status, apply/reapply, rollback/reapply, protection of existing schema/data, concurrent migration serialization, lock and SQL deadlines, signal cancellation, safe errors, and connection cleanup. API foundation validation covers JSON routing errors, method/Allow behavior, HEAD responses, request-ID boundaries, log privacy, unchanged probe payloads, dependency outage/recovery, and shutdown cleanup. Validation uses isolated projects and removes their containers and volumes without changing existing databases or creating test/fixture files. Minimal developer commands and formatting/linting workflow are next. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -315,16 +316,16 @@ Use versioned REST APIs under `/api/v1/...`. Phase 0 provides `GET /health` with
 
 It is a process liveness check without dependency checks. `GET /ready` returns `200` with `{"status":"ready"}` while the lifecycle is active and a PostgreSQL ping succeeds within `BIZNES_DATABASE_HEALTH_TIMEOUT`, including pool acquisition. It returns `503` with `{"status":"not_ready"}` on dependency failure, timeout, request cancellation, or shutdown, and can recover after a database outage without an API restart. The ping uses request and lifecycle cancellation without canceling unrelated handlers. New connections may fail after the listener closes; requests still served during draining retain successful liveness responses. Both endpoints prevent caching and use the existing request ID and logging middleware. Readiness does not assert application schema exists. Do not create fake business endpoints or introduce GraphQL prematurely.
 
-The following are initial conventions to implement and refine with the first real API:
+The [API conventions](API_CONVENTIONS.md) establish the business contract for `/api/v1`. Shared routing/recovery errors are implemented; business success DTOs, input decoding, resource validation, and list pagination will accompany real endpoints. The conventions include:
 
 | Concern | Convention |
 | --- | --- |
 | Field names | English `snake_case` JSON and database names; idiomatic Go names internally. |
 | Successful responses | Business APIs return `data` and optional `meta`; health retains its simple response. |
-| Errors | An `error` object with stable `code`, safe `message`, optional field `details`, and `request_id`. Never expose secrets or internal stack traces. |
-| Validation | Parse and validate transport input at the handler boundary; application services enforce domain invariants. |
-| Status codes | Use meaningful HTTP codes: 400 malformed input, 401 unauthenticated, 403 forbidden, 404 unavailable resource, 409 conflict, 422 invalid domain input, 429 rate limit, and safe 5xx failures. Avoid existence leaks across tenants. |
-| Pagination | Start with bounded `page`/`limit` pagination and count metadata where affordable; document defaults and caps. Use stable ordering with an ID tie-breaker. Change to cursors only for an evidenced need. |
+| Errors | The shared writer returns an `error` object with stable `code`, safe `message`, optional field/code `details`, and the middleware's `request_id`. Never expose secrets or internal stack traces. |
+| Validation | Strict JSON object decoding with a default 1 MiB body cap, then bounded field validation at the handler boundary; application services enforce domain invariants. Implement this with the first JSON endpoint. |
+| Status codes | Use meaningful HTTP codes: 400 malformed input, 401 unauthenticated, 403 forbidden, 404 unavailable resource, 405 unsupported method with `Allow`, 409 conflict, 413 oversized body, 415 unsupported media type, 422 invalid values, 429 rate limit, and safe 5xx failures. Avoid existence leaks across tenants. |
+| Pagination | Default `page=1` and `limit=20`, capped at page 10000 and limit 100; reject invalid values and include count metadata only where affordable. Use stable ordering with an ID tie-breaker. Change to cursors only for an evidenced need. |
 | Filtering/sorting | Allowlist supported fields, validate ranges, and document order; never interpolate arbitrary client input into SQL. |
 | Timestamps | RFC 3339 UTC instants; ISO `YYYY-MM-DD` for genuine date-only values, with business timezone semantics. |
 | IDs | Opaque UUID identifiers; never treat knowing an ID as authorization. |
@@ -333,7 +334,7 @@ The following are initial conventions to implement and refine with the first rea
 | Authorization | Resolve organization access from authenticated membership and permissions on every operation, including tools, exports, and jobs. |
 | Request ID | Attach a bounded, validated request ID to responses, errors, and logs; generate one when needed. |
 
-Example business error shape, planned rather than implemented:
+Example validation error for future business handlers, using the implemented shared envelope:
 
 ```json
 {
@@ -437,11 +438,11 @@ Work in these reviewed increments:
 | 7 | PostgreSQL local development environment with Compose. | Complete; runtime validation now passed. |
 | 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Complete. |
 | 9 | Migration foundation with documented commands. | Complete; isolated PostgreSQL runtime validation passed. |
-| 10 | Versioned API response, error, validation, and pagination conventions. | Not started. |
+| 10 | Versioned API response, error, validation, and pagination conventions. | Complete; contract documented and shared routing errors validated. |
 | 11 | Formatting/linting and developer commands. | Not started. |
 | 12 | Go validation and CI foundation. | Not started. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the migration foundation, the next work is versioned API response, error, validation, and pagination conventions. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the API conventions, the next work is minimal developer commands and formatting/linting workflow. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -584,7 +585,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds explicit migration tooling and its developer workflow; API conventions follow separately.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment establishes API conventions and shared HTTP errors; developer commands follow separately.
 
 ## Decisions & Changes
 
@@ -602,5 +603,6 @@ Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete
 | 2026-10-04 | Initialize `github.com/wikiccu/biznes` with Go 1.27.1 and a minimal `cmd/api` executable. | Derive the module path from the configured GitHub remote; introduce dependencies and runtime capabilities only in their own increments. |
 | 2026-10-05 | Use native pgx v5.11.0 pooling, a required API connection string, and a bounded database readiness ping. | Reuse driver connection/pool/TLS settings, verify the dependency before HTTP starts, keep process liveness independent during outages, and close the pool after HTTP drains. |
 | 2026-10-05 | Use Goose v3.26.0 through an explicit `cmd/migrate` command; create a `biznes` application namespace and keep version history in `public`. | A mature context-aware migration provider with native PostgreSQL advisory locking; pin this stable release to preserve existing API dependency versions. Schema changes and rollback are explicit, versioned, and transactional; the initial rollback protects non-empty schemas. No schema auto-sync or business tables. |
+| 2026-10-05 | Establish the `/api/v1` business contract and share routing/recovery error serialization. | Consistent safe JSON errors with request IDs, native Gin method handling, and explicit success/input/pagination/time/ID conventions. Keep probes simple and implement endpoint-specific decoders/DTOs/pagination with real features, without placeholder routes or additional dependencies. |
 
 For future major changes, add the date, decision, reason, affected capabilities/phases, and any migration implications. Update the relevant sections and Current State together so the blueprint continues to describe both the destination and the actual repository.

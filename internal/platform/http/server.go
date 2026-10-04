@@ -19,8 +19,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.RedirectTrailingSlash = false
+	router.HandleMethodNotAllowed = true
 	_ = router.SetTrustedProxies(nil)
 	router.Use(requestID(), requestLogging(logger), recovery(logger))
+	router.NoRoute(func(c *gin.Context) {
+		WriteError(c, http.StatusNotFound, "not_found", "The requested resource was not found.")
+	})
+	router.NoMethod(func(c *gin.Context) {
+		WriteError(c, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not supported for this resource.")
+	})
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, and explicit SQL migration workflow are implemented. Business features and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, explicit SQL migration workflow, and shared HTTP errors are implemented. Business API conventions are documented; business features and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -140,11 +140,13 @@ Startup configuration failures always emit an `ERROR` record and exit with code 
 | `GET /ready` | `200` with `{"status":"ready"}` | The lifecycle context is active and a bounded PostgreSQL ping succeeds. |
 | `GET /ready` during an outage or shutdown | `503` with `{"status":"not_ready"}` | The database check fails or times out, the request is canceled, or shutdown begins while the handler is active. |
 
-Shutdown closes the listening socket, so new probe connections may fail instead of receiving a response. Liveness remains successful during database outages and for requests served during draining. The readiness ping observes both request cancellation and application shutdown without canceling other in-flight request contexts. Readiness can recover after a database outage without restarting the API; it verifies connectivity, not application schema. Unregistered paths, including `/`, return `404`.
+Shutdown closes the listening socket, so new probe connections may fail instead of receiving a response. Liveness remains successful during database outages and for requests served during draining. The readiness ping observes both request cancellation and application shutdown without canceling other in-flight request contexts. Readiness can recover after a database outage without restarting the API; it verifies connectivity, not application schema. Unregistered paths, including `/` and `/api/v1`, return a JSON `404` error. Unsupported methods on registered paths return a JSON `405` error with `Allow`; only `GET` is currently registered for the probes.
 
 Every handled request receives an `X-Request-ID`. A single supplied value is accepted if it contains 1–128 ASCII letters, digits, dots, underscores, or hyphens. Missing, duplicate, empty, or invalid values are replaced with a cryptographically random opaque ID. The ID is available as `request_id` in the Gin context and appears in the response header, request log, and recovered-panic error response.
 
-Recovery returns a safe `500` JSON error with code `internal_error` and a request ID, without exposing panic details or stack traces. Trusted proxy headers and automatic trailing-slash redirects are disabled. There are no placeholder business endpoints.
+Shared errors use `{"error":{"code":"...","message":"...","request_id":"..."}}`, with optional field/code `details`. They return `application/json` and `Cache-Control: no-store`. Recovery uses the same writer for a safe `500` with code `internal_error` before response commitment; after commitment it aborts without appending a second body or changing the status. Panic details and stack traces are omitted. Trusted proxy headers and automatic trailing-slash redirects are disabled.
+
+The [API conventions](docs/API_CONVENTIONS.md) reserve `/api/v1` for real business routes and define `data`/optional `meta` success envelopes, status/error mappings, bounded JSON input, validation, pagination (default page `1`, limit `20`, caps `10000`/`100`), UTC timestamps, and opaque UUID IDs. Resource decoding and pagination will accompany the first business endpoints; there are no placeholder business endpoints.
 
 ### Git workflow
 
@@ -180,4 +182,4 @@ Review new untracked files directly before staging; ordinary `git diff` does not
 
 ## Next increment
 
-Establish versioned API response, error, validation, and pagination conventions as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add minimal developer commands and formatting/linting workflow as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
