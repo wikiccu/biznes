@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, minimal executable entry point, and typed environment configuration are implemented. Structured logging, HTTP serving, business features, third-party dependencies, database schema, Docker setup, and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, minimal executable entry point, typed environment configuration, and structured JSON logging are implemented. HTTP serving, business features, third-party dependencies, database schema, Docker setup, and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -29,7 +29,7 @@ Install [Go 1.27.1 or newer](https://go.dev/dl/) and Git. From the repository ro
 go run ./cmd/api
 ```
 
-It loads and validates configuration, prints the selected HTTP port, and exits successfully. The entry point does not start an HTTP server yet. No database or Docker setup is required for this increment.
+It loads and validates configuration, emits an `INFO` initialization log with the selected HTTP port when the configured level permits it, and exits successfully. The entry point does not start an HTTP server yet. No database or Docker setup is required for this increment.
 
 ### Configuration
 
@@ -38,6 +38,7 @@ Configuration comes from the process environment. [`.env.example`](.env.example)
 | Variable | Default when absent | Validation |
 | --- | --- | --- |
 | `BIZNES_HTTP_PORT` | `8080` | Integer from `1` through `65535`. Empty, malformed, and out-of-range values fail startup with exit code `1`. |
+| `BIZNES_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` (case-insensitive). Empty, whitespace-padded, and unsupported values fail startup with exit code `1`. |
 
 For example, in PowerShell:
 
@@ -54,6 +55,14 @@ BIZNES_HTTP_PORT=9000 go run ./cmd/api
 ```
 
 Configuration errors identify the variable and constraint without echoing its value. No credentials are required at this stage; additional settings will accompany the capabilities that use them.
+
+### Logging
+
+The application uses standard-library `log/slog` to write one JSON object per line to stderr. Records include `time`, `level`, `msg`, and `service: "biznes"`; initialization adds `http_port`. Stdout remains available for application output.
+
+The configured log level is the minimum severity: `warn` and `error` suppress the `INFO` initialization event. Startup configuration failures always emit an `ERROR` record and exit with code `1`, even when log-level configuration is invalid. Errors use fixed messages without recording supplied values or the full configuration.
+
+### Git workflow
 
 From the repository root, review the current state:
 
@@ -87,4 +96,4 @@ Review new untracked files directly before staging; ordinary `git diff` does not
 
 ## Next increment
 
-Add structured application logging. The Gin HTTP server follows as a separate increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add the Gin HTTP server lifecycle, including timeouts, graceful shutdown, request IDs, recovery, and request logging, as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
