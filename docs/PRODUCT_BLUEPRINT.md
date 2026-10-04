@@ -7,7 +7,7 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 2 — Go module and minimal application initialization |
+| Current Increment | Step 3 — Typed environment configuration |
 | Last Updated | 2026-10-04 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,7 +16,7 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The first documentation increment is committed. The second increment initializes an executable that prints `biznes` and exits successfully.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. Documentation and Go initialization are committed. The executable now loads typed environment configuration, reports the selected HTTP port, and exits successfully; invalid configuration produces a safe error and exit code `1`.
 
 Implemented:
 
@@ -24,15 +24,16 @@ Implemented:
 - Initial documented conventions for money, time, identifiers, APIs, tenant ownership, and development workflow.
 - A README describing the current state and next development step.
 - A Go module requiring Go 1.27.1 or newer and a minimal executable entry point using only the standard library.
+- Typed configuration in `internal/platform/config`, a committed `.env.example`, and Git ignore rules for local env files. `BIZNES_HTTP_PORT` defaults to `8080` when absent and accepts integers from `1` through `65535`; an explicitly empty value is invalid. Configuration comes from the process environment without automatic env-file loading.
 
 Not implemented:
 
-- Configuration, structured logging, or Gin HTTP server.
+- Structured logging or Gin HTTP server.
 - Health endpoint, middleware, graceful shutdown, or shared API error handling.
 - PostgreSQL environment, migrations, Docker setup, developer tooling, or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Its documentation and Go initialization steps are complete. The executable does not serve HTTP or access a database yet. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Its documentation, Go initialization, and typed configuration steps are complete. The executable does not serve HTTP or access a database yet. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -420,7 +421,7 @@ Work in these reviewed increments:
 | --- | --- | --- |
 | 1 | Product blueprint and concise README. | Complete and committed. |
 | 2 | Go module and minimal application initialization. | Complete. |
-| 3 | Typed, environment-based configuration and `.env.example`. | Not started. |
+| 3 | Typed, environment-based configuration and `.env.example`. | Complete. |
 | 4 | Structured application logging. | Not started. |
 | 5 | Gin HTTP server lifecycle, timeouts, graceful shutdown, request ID, recovery, and request logging. | Not started. |
 | 6 | `/health` and `/ready` with distinct liveness/readiness semantics. | Not started. |
@@ -431,7 +432,7 @@ Work in these reviewed increments:
 | 11 | Formatting/linting and developer commands. | Not started. |
 | 12 | Go validation and CI foundation. | Not started. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After Go initialization, the next work is typed application configuration. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After typed configuration, the next work is structured application logging. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -537,7 +538,7 @@ Potential work includes a public API, expanded webhooks, partner integrations, a
 
 ### Validation and tests
 
-Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. Go initialization supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api`; running `go run ./cmd/api` verifies the minimal executable. There are no test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
+Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api internal`; running `go run ./cmd/api` verifies configuration loading and the executable. Check the default, an override, valid port boundaries, and invalid configuration with the built executable. There are no test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
 
 Meaningful future tests should protect business invariants, database behavior, and important HTTP contracts rather than chase arbitrary coverage or mock everything. The global rule remains in effect: **do not create new test files or modify existing tests without explicit user authorization for that task**. Existing tests may be inspected and run when useful. No tests are being added in this step.
 
@@ -574,7 +575,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. Go initialization adds only the module and minimal executable; configuration, logging, HTTP serving, and database setup follow separately.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds typed environment configuration; logging, HTTP serving, and database setup follow separately.
 
 ## Decisions & Changes
 

@@ -1,7 +1,18 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+
+	"github.com/wikiccu/biznes/internal/platform/config"
+)
 
 func main() {
-	fmt.Println("biznes")
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "biznes:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("biznes: configuration loaded (HTTP port %d)\n", cfg.HTTPPort)
 }
