@@ -7,7 +7,7 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 7 — Local PostgreSQL Compose environment |
+| Current Increment | Step 8 — PostgreSQL connection lifecycle and readiness |
 | Last Updated | 2026-10-05 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,7 +16,7 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. Documentation, Go initialization, typed configuration, structured logging, and the HTTP lifecycle are committed. The executable runs a Gin HTTP server with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, and `/health` and `/ready` endpoints. Unregistered paths return `404`.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The executable verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Unregistered paths return `404`.
 
 Implemented:
 
@@ -29,16 +29,17 @@ Implemented:
 - Gin v1.12.0 and the HTTP foundation in `internal/platform/http`. Read-header, read, write, idle, and shutdown timeouts default to `5s`, `15s`, `15s`, `60s`, and `10s`; their `BIZNES_HTTP_*_TIMEOUT` environment overrides must be positive Go durations.
 - Ctrl+C/SIGTERM shutdown that stops accepting connections, waits for in-flight requests within the deadline, and closes remaining connections on timeout. Startup binding, serving, and shutdown failures are reported as errors.
 - Bounded, validated `X-Request-ID` propagation with cryptographically random fallback IDs, structured completion logs using route templates instead of raw URLs, and safe recovered-panic `500` JSON responses. Gin debug output, trusted proxy headers, and automatic trailing-slash redirects are disabled.
-- `GET /health` returns `200` with `{"status":"ok"}` for process liveness. `GET /ready` returns `200` with `{"status":"ready"}` while the lifecycle context is active and `503` with `{"status":"not_ready"}` after shutdown begins for requests still served during draining. Both use `Cache-Control: no-store`; readiness observes the lifecycle without canceling request contexts. No dependency checks exist yet.
+- `GET /health` returns `200` with `{"status":"ok"}` for process liveness. `GET /ready` returns `200` with `{"status":"ready"}` when the lifecycle is active and a bounded PostgreSQL ping succeeds, or `503` with `{"status":"not_ready"}` on dependency failure, timeout, or cancellation. Readiness observes request cancellation and shutdown without canceling other request contexts. Both use `Cache-Control: no-store`; readiness checks connectivity, not schema.
 - A local PostgreSQL environment in `compose.yaml`, pinned to the official `postgres:18.6-trixie` image. It publishes port `5432` on `127.0.0.1` by default, requires a non-empty development password, uses a named volume mounted at `/var/lib/postgresql`, checks TCP readiness with `pg_isready`, and allows 30 seconds for clean shutdown. `.env.example` documents Compose settings; Compose reads `.env`, while the Go API still uses only process environment configuration.
+- Native pgx v5.11.0 pooling in `internal/platform/database`. `BIZNES_DATABASE_URL` is required; `BIZNES_DATABASE_CONNECT_TIMEOUT` and `BIZNES_DATABASE_HEALTH_TIMEOUT` default to `5s` and `2s`, and must be positive durations. Native connection-string options configure the pool budget and lifecycle; invalid pool intervals/minimums fail startup safely. Startup verifies connectivity before HTTP binds. The pool remains available while HTTP drains and closes on success or HTTP failure. pgx may spend approximately 15 additional seconds cleaning up canceled connections to an unresponsive database. Connection strings, credentials, and raw driver errors are omitted from logs and probe responses.
 
 Not implemented:
 
-- Shared business API error handling or dependency readiness checks.
-- PostgreSQL application connections, migrations, API containerization, developer tooling, or CI.
+- Shared business API error handling.
+- Migrations, API containerization, developer tooling, or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Its documentation, Go initialization, typed configuration, structured logging, HTTP lifecycle, and health/readiness steps are complete. The local PostgreSQL Compose configuration is implemented and validated; runtime startup, SQL, authentication, and persistence checks remain pending because Docker Hub image downloads returned a country-blocking `403`, and Google's documented Docker Hub cache also returned `403`. The isolated validation project was removed without changing existing databases. Rerun those checks when the pinned image is available; PostgreSQL connection lifecycle, pooling, and dependency readiness checks are the next implementation increment. The API currently runs independently of the development database. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Steps 1–8 are implemented. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Validation uses isolated projects and removes their containers and volumes without changing existing databases. Migration tooling and its developer workflow are next. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -285,7 +286,7 @@ biznes/
 ├── migrations/
 ├── docs/PRODUCT_BLUEPRINT.md
 ├── .env.example
-├── docker-compose.yml
+├── compose.yaml
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -295,7 +296,7 @@ This is a planned shape, not the current repository tree. Avoid a single global 
 
 ## 7. Technical Direction
 
-The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Go 1.27.1 and Gin v1.12.0 are recorded in `go.mod`, with dependency checksums in `go.sum`; `compose.yaml` pins the official PostgreSQL image to `18.6-trixie`. PostgreSQL 18.6 is the current supported minor release verified against the [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/) and [official image tags](https://github.com/docker-library/docs/blob/master/postgres/README.md) at implementation time. Select supported stable versions for the remaining components and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
+The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Go 1.27.1, Gin v1.12.0, and [pgx v5.11.0](https://github.com/jackc/pgx/releases/tag/v5.11.0) are recorded in `go.mod`, with dependency checksums in `go.sum`; `compose.yaml` pins the official PostgreSQL image to `18.6-trixie`. PostgreSQL 18.6 is the current supported minor release verified against the [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/) and [official image tags](https://github.com/docker-library/docs/blob/master/postgres/README.md) at implementation time. Use native pgx pooling and explicit context-aware SQL operations; do not introduce an ORM or wrapper repository framework. Select supported stable versions for the remaining components and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
 
 Add a dependency only for a concrete need. Inspect current stable ecosystem conventions before choosing unspecified libraries, such as a database driver or migration tool. Use explicit migrations, never production ORM auto-sync.
 
@@ -309,7 +310,7 @@ Use versioned REST APIs under `/api/v1/...`. Phase 0 provides `GET /health` with
 {"status":"ok"}
 ```
 
-It is a process liveness check without dependency checks. `GET /ready` returns `200` with `{"status":"ready"}` while the application lifecycle context is active, or `503` with `{"status":"not_ready"}` once shutdown begins. New connections may fail after the listener closes; requests still served during draining retain successful liveness responses. Both endpoints prevent caching and use the existing request ID and logging middleware. Add database readiness checks when the connection layer exists. Do not create fake business endpoints or introduce GraphQL prematurely.
+It is a process liveness check without dependency checks. `GET /ready` returns `200` with `{"status":"ready"}` while the lifecycle is active and a PostgreSQL ping succeeds within `BIZNES_DATABASE_HEALTH_TIMEOUT`, including pool acquisition. It returns `503` with `{"status":"not_ready"}` on dependency failure, timeout, request cancellation, or shutdown, and can recover after a database outage without an API restart. The ping uses request and lifecycle cancellation without canceling unrelated handlers. New connections may fail after the listener closes; requests still served during draining retain successful liveness responses. Both endpoints prevent caching and use the existing request ID and logging middleware. Readiness does not assert application schema exists. Do not create fake business endpoints or introduce GraphQL prematurely.
 
 The following are initial conventions to implement and refine with the first real API:
 
@@ -430,14 +431,14 @@ Work in these reviewed increments:
 | 4 | Structured application logging. | Complete. |
 | 5 | Gin HTTP server lifecycle, timeouts, graceful shutdown, request ID, recovery, and request logging. | Complete. |
 | 6 | `/health` and `/ready` with distinct liveness/readiness semantics. | Complete. |
-| 7 | PostgreSQL local development environment with Compose. | Implemented; Compose validation passed, runtime checks blocked by image-download `403`. |
-| 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Not started. |
+| 7 | PostgreSQL local development environment with Compose. | Complete; runtime validation now passed. |
+| 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Complete. |
 | 9 | Migration foundation with documented commands. | Not started. |
 | 10 | Versioned API response, error, validation, and pagination conventions. | Not started. |
 | 11 | Formatting/linting and developer commands. | Not started. |
 | 12 | Go validation and CI foundation. | Not started. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the local PostgreSQL Compose environment, the next work is PostgreSQL application connections and dependency readiness checks. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the PostgreSQL connection layer, the next work is migration tooling and its developer workflow. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -543,7 +544,7 @@ Potential work includes a public API, expanded webhooks, partner integrations, a
 
 ### Validation and tests
 
-Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api internal`; running `go run ./cmd/api` starts the server. Check liveness/readiness responses during serving and shutdown, request IDs, structured completion logs, safe configuration and binding failures, transport timeouts, and graceful shutdown with the built executable. Validate Compose with `docker compose config --quiet`; when a Docker engine is available, check database startup, readiness, SQL access, and persistence across container recreation using an isolated project and volume. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
+Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, `go mod verify`, and `gofmt -l cmd/api internal`; `go run ./cmd/api` starts the server when PostgreSQL and the required connection string are configured. Check liveness/readiness responses during serving, dependency outages/recovery, and shutdown, request IDs, structured logs, safe configuration/connection/binding failures, timeouts, cancellation, and pool cleanup with the built executable. Validate Compose with `docker compose config --quiet`; use isolated projects for authenticated SQL, pool limits, and persistence across container recreation. Allow for pgx's separate cleanup timeout when testing an unresponsive database. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
 
 Meaningful future tests should protect business invariants, database behavior, and important HTTP contracts rather than chase arbitrary coverage or mock everything. The global rule remains in effect: **do not create new test files or modify existing tests without explicit user authorization for that task**. Existing tests may be inspected and run when useful. No tests are being added in this step.
 
@@ -580,7 +581,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds local PostgreSQL with Compose; application database access and migrations follow separately.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment adds PostgreSQL connections and dependency readiness; migration tooling follows separately.
 
 ## Decisions & Changes
 
@@ -596,5 +597,6 @@ Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete
 | 2026-10-04 | Use `main` only and stop after the first documentation increment. | Follow the project-specific prompt; leave all changes uncommitted for human review. |
 | 2026-10-04 | Authorize one validated commit and push per turn on `main`, then wait for `continue`. | The autonomous development protocol supersedes the earlier manual-commit workflow; preserve unrelated work and never merge automatically. |
 | 2026-10-04 | Initialize `github.com/wikiccu/biznes` with Go 1.27.1 and a minimal `cmd/api` executable. | Derive the module path from the configured GitHub remote; introduce dependencies and runtime capabilities only in their own increments. |
+| 2026-10-05 | Use native pgx v5.11.0 pooling, a required API connection string, and a bounded database readiness ping. | Reuse driver connection/pool/TLS settings, verify the dependency before HTTP starts, keep process liveness independent during outages, and close the pool after HTTP drains. |
 
 For future major changes, add the date, decision, reason, affected capabilities/phases, and any migration implications. Update the relevant sections and Current State together so the blueprint continues to describe both the destination and the actual repository.

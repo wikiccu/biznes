@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, and a local PostgreSQL Compose environment are implemented. Database connections, migrations, business features, and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, and PostgreSQL connection pool are implemented. Migrations, business features, and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -19,17 +19,17 @@ The blueprint is the living source of truth. Update it whenever a significant pr
 - Docker and Docker Compose for the local environment.
 - A modular monolith; add infrastructure and domain modules when an implemented requirement needs them.
 
-The Go module uses `github.com/wikiccu/biznes` and requires Go 1.27.1 or newer. Gin is pinned to [v1.12.0](https://github.com/gin-gonic/gin/releases/tag/v1.12.0). Additional libraries will be selected during their respective implementation steps after checking current stable releases. Redis, AI providers, object storage, and background workers are future capabilities.
+The Go module uses `github.com/wikiccu/biznes` and requires Go 1.27.1 or newer. Gin is pinned to [v1.12.0](https://github.com/gin-gonic/gin/releases/tag/v1.12.0), and the PostgreSQL driver/pool is [pgx v5.11.0](https://github.com/jackc/pgx/releases/tag/v5.11.0). Additional libraries will be selected during their respective implementation steps after checking current stable releases. Redis, AI providers, object storage, and background workers are future capabilities.
 
 ## Local development
 
-Install [Go 1.27.1 or newer](https://go.dev/dl/) and Git. From the repository root, run the minimal entry point:
+Install [Go 1.27.1 or newer](https://go.dev/dl/) and Git. Start PostgreSQL using the local development instructions below, then set `BIZNES_DATABASE_URL` in the API process environment with the matching database, user, password, and host port. From the repository root, run:
 
 ```text
 go run ./cmd/api
 ```
 
-It loads and validates configuration and keeps serving HTTP on port `8080` by default. Stop it with Ctrl+C; deployments can send SIGTERM. Shutdown stops accepting connections and allows in-flight requests to finish within the configured deadline, then closes remaining connections if the deadline expires. A shutdown failure exits with code `1`.
+It loads and validates configuration, creates and verifies the PostgreSQL pool, and then serves HTTP on port `8080` by default. Failed database initialization exits with code `1` before the HTTP listener opens. Stop it with Ctrl+C; deployments can send SIGTERM. HTTP shutdown stops accepting connections and allows in-flight requests to finish within the configured deadline, then closes remaining HTTP connections if the deadline expires. The database pool closes after HTTP drains, including on binding or shutdown failure. pgx cleanup can take up to approximately 15 additional seconds when PostgreSQL is unresponsive; the HTTP shutdown timeout applies to HTTP draining. A shutdown failure exits with code `1`.
 
 Check the running server with:
 
@@ -38,7 +38,7 @@ curl -i http://localhost:8080/health
 curl -i http://localhost:8080/ready
 ```
 
-Both return JSON with an `X-Request-ID` response header and `Cache-Control: no-store`. The API currently runs independently of PostgreSQL; database connections and dependency readiness checks are the next increment.
+Both return JSON with an `X-Request-ID` response header and `Cache-Control: no-store`. `/ready` checks the configured database connection; `/health` remains a process liveness check.
 
 ### Local PostgreSQL
 
@@ -53,7 +53,7 @@ Copy `.env.example` to `.env` if the file does not already exist. Set `BIZNES_PO
 | `BIZNES_POSTGRES_USER` | `biznes` | Development superuser created on first initialization. |
 | `BIZNES_POSTGRES_PASSWORD` | Required, non-empty | Password set on first initialization. |
 
-Compose reads `.env` automatically; process environment values take precedence. These PostgreSQL settings are not consumed by the Go API yet. Use `docker compose config --quiet` to validate without printing the resolved password.
+Compose reads `.env` automatically; process environment values take precedence. These initialization settings are separate from the API's `BIZNES_DATABASE_URL`, which must identify the same database for local development. Use `docker compose config --quiet` to validate without printing the resolved password.
 
 From the repository root:
 
@@ -83,28 +83,37 @@ API configuration comes from the process environment. [`.env.example`](.env.exam
 | `BIZNES_HTTP_WRITE_TIMEOUT` | `15s` | Positive Go duration. |
 | `BIZNES_HTTP_IDLE_TIMEOUT` | `60s` | Positive Go duration. |
 | `BIZNES_HTTP_SHUTDOWN_TIMEOUT` | `10s` | Positive Go duration. |
+| `BIZNES_DATABASE_URL` | Required | Non-blank PostgreSQL URL or keyword/value connection string accepted by pgx. Invalid connection or pool settings fail startup safely. |
+| `BIZNES_DATABASE_CONNECT_TIMEOUT` | `5s` | Positive Go duration bounding the initial connection check and capping new connection attempts. A shorter driver `connect_timeout` is retained. |
+| `BIZNES_DATABASE_HEALTH_TIMEOUT` | `2s` | Positive Go duration bounding each readiness check, including waiting for a pooled connection; also bounds pgx checkout pings. |
 
 Duration values use units such as `500ms`, `15s`, or `1m`. Empty, malformed, zero, negative, and overflowing durations fail startup with exit code `1`. Read/write settings are HTTP transport timeouts; they do not automatically cancel application work at that deadline.
+
+Use native [pgx pool options](https://pkg.go.dev/github.com/jackc/pgx/v5/pgxpool#ParseConfig) in the connection string, such as `pool_max_conns=10`, to set the connection budget. Without an override, pgx uses the larger of four or the CPU count. The API's health timeout takes precedence over `pool_ping_timeout`. Other pool lifecycle settings follow pgx connection-string options and defaults; minimum connection counts must be non-negative and no larger than the maximum, and the background health-check interval must be positive.
 
 For example, in PowerShell:
 
 ```powershell
 $env:BIZNES_HTTP_PORT = '9000'
+$env:BIZNES_DATABASE_URL = 'postgres://biznes:YOUR_ENCODED_PASSWORD@127.0.0.1:5432/biznes?sslmode=disable&pool_max_conns=10'
 go run ./cmd/api
 Remove-Item Env:BIZNES_HTTP_PORT
+Remove-Item Env:BIZNES_DATABASE_URL
 ```
 
 Or in a POSIX shell:
 
 ```sh
-BIZNES_HTTP_PORT=9000 go run ./cmd/api
+BIZNES_DATABASE_URL='postgres://biznes:YOUR_ENCODED_PASSWORD@127.0.0.1:5432/biznes?sslmode=disable&pool_max_conns=10' BIZNES_HTTP_PORT=9000 go run ./cmd/api
 ```
 
-Configuration errors identify the variable and constraint without echoing its value. The Go API currently requires no credentials; PostgreSQL's separate local development settings are documented above.
+Replace `YOUR_ENCODED_PASSWORD` with the URL-encoded form of the password chosen for Compose, and adjust the URL when overriding the database, user, or port. `sslmode=disable` is for this local container; use `sslmode=verify-full` with the appropriate trusted certificate configuration in deployments. pgx handles authentication and TLS. The API does not load `.env` automatically.
+
+Configuration and database startup errors use fixed messages without exposing the connection string, password, or raw PostgreSQL errors. `internal/platform/database.Open` returns the native `pgxpool.Pool`; use operation contexts with `Exec`, `Query`, and `QueryRow`, close returned rows, and release explicitly acquired connections.
 
 ### Logging
 
-The application uses standard-library `log/slog` to write one JSON object per line to stderr. Records include `time`, `level`, `msg`, and `service: "biznes"`. Server lifecycle events identify listening, stopping, and stopped states. The listening event is emitted only after the port is bound successfully.
+The application uses standard-library `log/slog` to write one JSON object per line to stderr. Records include `time`, `level`, `msg`, and `service: "biznes"`. Lifecycle events identify the verified database pool (including its maximum connection count), HTTP listening, stopping, stopped, and pool closure. The listening event is emitted only after the port is bound successfully.
 
 The configured log level is the minimum severity: `warn` and `error` suppress `INFO` lifecycle and ordinary request events. Requests record `request_id`, method, route template (empty for unmatched routes), status, and duration in milliseconds; responses with status `500` or higher are logged at `ERROR`. Query strings, raw URL paths, headers, bodies, and panic values are omitted from request and recovery logs.
 
@@ -115,10 +124,10 @@ Startup configuration failures always emit an `ERROR` record and exit with code 
 | Endpoint | Response | Meaning |
 | --- | --- | --- |
 | `GET /health` | `200` with `{"status":"ok"}` | Process liveness; does not check dependencies. |
-| `GET /ready` | `200` with `{"status":"ready"}` | The HTTP application is running and its lifecycle context is active. |
-| `GET /ready` during shutdown | `503` with `{"status":"not_ready"}` | Shutdown has begun; readiness fails for requests that still reach the handler while connections drain. |
+| `GET /ready` | `200` with `{"status":"ready"}` | The lifecycle context is active and a bounded PostgreSQL ping succeeds. |
+| `GET /ready` during an outage or shutdown | `503` with `{"status":"not_ready"}` | The database check fails or times out, the request is canceled, or shutdown begins while the handler is active. |
 
-Shutdown closes the listening socket, so new probe connections may fail instead of receiving a response. Liveness remains successful for requests served during draining, and readiness does not cancel in-flight request contexts. Database checks will be added to readiness when the connection layer exists. Unregistered paths, including `/`, return `404`.
+Shutdown closes the listening socket, so new probe connections may fail instead of receiving a response. Liveness remains successful during database outages and for requests served during draining. The readiness ping observes both request cancellation and application shutdown without canceling other in-flight request contexts. Readiness can recover after a database outage without restarting the API; it verifies connectivity, not application schema. Unregistered paths, including `/`, return `404`.
 
 Every handled request receives an `X-Request-ID`. A single supplied value is accepted if it contains 1–128 ASCII letters, digits, dots, underscores, or hyphens. Missing, duplicate, empty, or invalid values are replaced with a cryptographically random opaque ID. The ID is available as `request_id` in the Gin context and appears in the response header, request log, and recovered-panic error response.
 
@@ -152,10 +161,10 @@ git diff --check
 git status --short
 ```
 
-`go test ./...` currently checks package compilation; no project test files exist yet. `gofmt -l cmd/api internal` should produce no output. Gin and its transitive dependencies are recorded in `go.mod` and `go.sum`.
+`go test ./...` currently checks package compilation; no project test files exist yet. `gofmt -l cmd/api internal` should produce no output. Gin, pgx, and their transitive dependencies are recorded in `go.mod` and `go.sum`.
 
 Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing. Compose commands are documented above; migration and other commands will accompany their tools.
 
 ## Next increment
 
-Add PostgreSQL connection lifecycle, pooling, and dependency readiness checks as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add migration tooling and its developer workflow as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).

@@ -11,24 +11,29 @@ import (
 )
 
 type Config struct {
-	HTTPPort              int
-	LogLevel              slog.Level
-	HTTPReadHeaderTimeout time.Duration
-	HTTPReadTimeout       time.Duration
-	HTTPWriteTimeout      time.Duration
-	HTTPIdleTimeout       time.Duration
-	HTTPShutdownTimeout   time.Duration
+	HTTPPort               int
+	LogLevel               slog.Level
+	HTTPReadHeaderTimeout  time.Duration
+	HTTPReadTimeout        time.Duration
+	HTTPWriteTimeout       time.Duration
+	HTTPIdleTimeout        time.Duration
+	HTTPShutdownTimeout    time.Duration
+	DatabaseURL            string
+	DatabaseConnectTimeout time.Duration
+	DatabaseHealthTimeout  time.Duration
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPPort:              8080,
-		LogLevel:              slog.LevelInfo,
-		HTTPReadHeaderTimeout: 5 * time.Second,
-		HTTPReadTimeout:       15 * time.Second,
-		HTTPWriteTimeout:      15 * time.Second,
-		HTTPIdleTimeout:       60 * time.Second,
-		HTTPShutdownTimeout:   10 * time.Second,
+		HTTPPort:               8080,
+		LogLevel:               slog.LevelInfo,
+		HTTPReadHeaderTimeout:  5 * time.Second,
+		HTTPReadTimeout:        15 * time.Second,
+		HTTPWriteTimeout:       15 * time.Second,
+		HTTPIdleTimeout:        60 * time.Second,
+		HTTPShutdownTimeout:    10 * time.Second,
+		DatabaseConnectTimeout: 5 * time.Second,
+		DatabaseHealthTimeout:  2 * time.Second,
 	}
 
 	if value, exists := os.LookupEnv("BIZNES_HTTP_PORT"); exists {
@@ -63,6 +68,8 @@ func Load() (Config, error) {
 		{"BIZNES_HTTP_WRITE_TIMEOUT", &cfg.HTTPWriteTimeout},
 		{"BIZNES_HTTP_IDLE_TIMEOUT", &cfg.HTTPIdleTimeout},
 		{"BIZNES_HTTP_SHUTDOWN_TIMEOUT", &cfg.HTTPShutdownTimeout},
+		{"BIZNES_DATABASE_CONNECT_TIMEOUT", &cfg.DatabaseConnectTimeout},
+		{"BIZNES_DATABASE_HEALTH_TIMEOUT", &cfg.DatabaseHealthTimeout},
 	} {
 		if value, exists := os.LookupEnv(setting.name); exists {
 			duration, err := time.ParseDuration(value)
@@ -71,6 +78,11 @@ func Load() (Config, error) {
 			}
 			*setting.value = duration
 		}
+	}
+
+	cfg.DatabaseURL = os.Getenv("BIZNES_DATABASE_URL")
+	if strings.TrimSpace(cfg.DatabaseURL) == "" {
+		return Config{}, errors.New("BIZNES_DATABASE_URL is required")
 	}
 
 	return cfg, nil

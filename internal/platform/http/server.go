@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wikiccu/biznes/internal/platform/config"
 )
 
-func New(ctx context.Context, cfg config.Config, logger *slog.Logger) *http.Server {
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.RedirectTrailingSlash = false
@@ -28,7 +29,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) *http.Serv
 	router.GET("/ready", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		// Observe shutdown without canceling in-flight request contexts.
-		if ctx.Err() != nil {
+		checkCtx, cancel := context.WithTimeout(c.Request.Context(), cfg.DatabaseHealthTimeout)
+		defer cancel()
+		stopCancel := context.AfterFunc(ctx, cancel)
+		defer stopCancel()
+		if ctx.Err() != nil || pool.Ping(checkCtx) != nil || ctx.Err() != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready"})
 			return
 		}
