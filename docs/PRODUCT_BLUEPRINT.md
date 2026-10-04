@@ -7,7 +7,7 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 1 — Product blueprint and README |
+| Current Increment | Step 2 — Go module and minimal application initialization |
 | Last Updated | 2026-10-04 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,22 +16,23 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint and a concise `README.md`. The initial branch is `main`; the repository had no commits, application files, or configured remote at inspection. The first documentation increment is ready for human review and commit.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, and `cmd/api/main.go`. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The first documentation increment is committed. The second increment initializes an executable that prints `biznes` and exits successfully.
 
 Implemented:
 
 - The long-term product vision, capability map, architectural direction, and phased roadmap.
 - Initial documented conventions for money, time, identifiers, APIs, tenant ownership, and development workflow.
 - A README describing the current state and next development step.
+- A Go module requiring Go 1.27.1 or newer and a minimal executable entry point using only the standard library.
 
 Not implemented:
 
-- Go module, application entry point, configuration, logging, or Gin HTTP server.
+- Configuration, structured logging, or Gin HTTP server.
 - Health endpoint, middleware, graceful shutdown, or shared API error handling.
 - PostgreSQL environment, migrations, Docker setup, developer tooling, or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Only its first documentation step is complete. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Its documentation and Go initialization steps are complete. The executable does not serve HTTP or access a database yet. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -288,7 +289,7 @@ This is a planned shape, not the current repository tree. Avoid a single global 
 
 ## 7. Technical Direction
 
-The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Select supported stable versions at implementation time and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
+The initial backend stack is **Go, Gin, PostgreSQL, and Docker Compose**. Go initialization uses Go 1.27.1, recorded in `go.mod`, with only standard-library imports. Select supported stable versions for the remaining components at implementation time and record/pin them in the relevant files. Prefer the standard library where reasonable, including configuration, structured logging, HTTP server lifecycle, and signals.
 
 Add a dependency only for a concrete need. Inspect current stable ecosystem conventions before choosing unspecified libraries, such as a database driver or migration tool. Use explicit migrations, never production ORM auto-sync.
 
@@ -417,16 +418,20 @@ Work in these reviewed increments:
 
 | Step | Cohesive increment | Current status |
 | --- | --- | --- |
-| 1 | Product blueprint and concise README. | Complete; awaiting human review/commit. |
-| 2 | Go module and minimal application initialization. | Not started. |
-| 3 | Configuration and structured logging. | Not started. |
-| 4 | Gin server, `/health`, request ID, recovery, basic errors, graceful shutdown. | Not started. |
-| 5 | Docker/Compose and PostgreSQL local development environment. | Not started. |
-| 6 | Migration foundation with documented commands. | Not started. |
-| 7 | Formatting/linting and developer tooling. | Not started. |
-| 8 | Initial validation and CI foundation. | Not started. |
+| 1 | Product blueprint and concise README. | Complete and committed. |
+| 2 | Go module and minimal application initialization. | Complete. |
+| 3 | Typed, environment-based configuration and `.env.example`. | Not started. |
+| 4 | Structured application logging. | Not started. |
+| 5 | Gin HTTP server lifecycle, timeouts, graceful shutdown, request ID, recovery, and request logging. | Not started. |
+| 6 | `/health` and `/ready` with distinct liveness/readiness semantics. | Not started. |
+| 7 | PostgreSQL local development environment with Compose. | Not started. |
+| 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Not started. |
+| 9 | Migration foundation with documented commands. | Not started. |
+| 10 | Versioned API response, error, validation, and pagination conventions. | Not started. |
+| 11 | Formatting/linting and developer commands. | Not started. |
+| 12 | Go validation and CI foundation. | Not started. |
 
-Review and propose a Conventional Commit message after every increment; stop before the next meaningful increment. After Step 1 is reviewed and committed by the human, the next work is Step 2. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After Go initialization, the next work is typed application configuration. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -532,23 +537,24 @@ Potential work includes a public API, expanded webhooks, partner integrations, a
 
 ### Validation and tests
 
-Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. As code is added, formatting, `go vet`, existing `go test` checks, and an appropriate lint command should form the validation/CI foundation. These commands are planned; no Go toolchain configuration exists yet.
+Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. Go initialization supports `go test ./...`, `go vet ./...`, and `gofmt -l cmd/api`; running `go run ./cmd/api` verifies the minimal executable. There are no test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
 
 Meaningful future tests should protect business invariants, database behavior, and important HTTP contracts rather than chase arbitrary coverage or mock everything. The global rule remains in effect: **do not create new test files or modify existing tests without explicit user authorization for that task**. Existing tests may be inspected and run when useful. No tests are being added in this step.
 
 ## Development Workflow
 
-This project's explicit workflow uses **`main` only** and supersedes the general stage/feature-branch rule for this project. Do not create feature branches, implement on `stage`, or switch to another base. There is currently no configured remote to fetch.
+This project's explicit workflow uses **`main` only** and supersedes the general stage/feature-branch and manual-commit rules for this project. Do not create feature branches, implement on `stage`, or switch to another base. Fetch the configured `origin` before changes and inspect whether local and remote history diverge; never merge automatically.
 
 Before changes, inspect:
 
 ```text
 git status
 git branch --show-current
-git log --oneline -n 10
+git log --oneline -n 20
+git remote -v
 ```
 
-The history command will report that no commits exist until the human makes the initial commit. Preserve unrelated and uncommitted work; never automatically reset, clean, restore, delete, or stash it.
+Preserve unrelated and uncommitted work; never automatically reset, clean, restore, delete, or stash it. Stage only files belonging to the current increment.
 
 For every increment:
 
@@ -556,18 +562,19 @@ For every increment:
 2. Format the changed files as appropriate.
 3. Run useful existing validation.
 4. Inspect the full change, status, scope, and any temporary/debug content.
-5. Explain the outcome and propose a precise Conventional Commit message.
-6. Stop before the next meaningful increment for human review.
+5. Create exactly one meaningful commit with a precise Conventional Commit message.
+6. Attempt to push to `origin/main` when an `origin` remote exists.
+7. Report the result and stop until the human says `continue`.
 
-Do not automatically commit, push, or merge. The human controls commits and integration. Review newly created untracked files directly; ordinary `git diff` does not include them.
+The implementation agent is explicitly authorized to commit and push each validated increment. Never merge automatically, amend existing commits routinely, commit credentials, or invent a remote URL. If no `origin` exists, keep the local commit and report the push as skipped. If pushing fails, retain the commit and report the error. Review newly created untracked files directly; ordinary `git diff` does not include them.
 
 ### Report after each step
 
-Report the current branch and phase, step completed, files added/modified, implementation, validation, important decisions, risks/TODOs, suggested commit message, and next recommended step.
+Report the current branch and phase, step completed, files added/modified, implementation, validation, important decisions, risks/TODOs, commit hash/message, push status, and next recommended step.
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current step creates only this blueprint and README; technical setup follows review.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. Go initialization adds only the module and minimal executable; configuration, logging, HTTP serving, and database setup follow separately.
 
 ## Decisions & Changes
 
@@ -581,5 +588,7 @@ Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete
 | 2026-10-04 | Use canonical UTC instants, explicit date-only semantics, and opaque UUID IDs. | Consistent storage and APIs; business timezone and calendar conversion stay explicit. |
 | 2026-10-04 | Keep AI read-only in Phase 4; introduce controlled actions in Phase 6. | Establish trusted data access before allowing financial mutations or external effects. |
 | 2026-10-04 | Use `main` only and stop after the first documentation increment. | Follow the project-specific prompt; leave all changes uncommitted for human review. |
+| 2026-10-04 | Authorize one validated commit and push per turn on `main`, then wait for `continue`. | The autonomous development protocol supersedes the earlier manual-commit workflow; preserve unrelated work and never merge automatically. |
+| 2026-10-04 | Initialize `github.com/wikiccu/biznes` with Go 1.27.1 and a minimal `cmd/api` executable. | Derive the module path from the configured GitHub remote; introduce dependencies and runtime capabilities only in their own increments. |
 
 For future major changes, add the date, decision, reason, affected capabilities/phases, and any migration implications. Update the relevant sections and Current State together so the blueprint continues to describe both the destination and the actual repository.
