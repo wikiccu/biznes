@@ -6,9 +6,9 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 ## Project status
 
-**Current phase: Phase 0 — Product & Engineering Foundation.**
+**Current phase: Phase 0 — Product & Engineering Foundation (implementation complete).**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, explicit SQL migration workflow, shared HTTP errors, and developer commands are implemented. Business API conventions are documented; business features and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, explicit SQL migration workflow, shared HTTP errors, developer commands, and Go CI workflow are implemented. Business API conventions are documented; business features remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -213,6 +213,22 @@ git status --short
 
 Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing.
 
+## Continuous integration
+
+The [Go validation workflow](.github/workflows/go.yml) runs on pushes to `main`, pull requests targeting `main`, and manual dispatch from [GitHub Actions](https://github.com/wikiccu/biznes/actions/workflows/go.yml). One Ubuntu 24.04 job uses the runner's PowerShell and the exact Go version from `go.mod`. Checkout and setup-go are pinned to release commit SHAs; setup-go caches Go modules/build output using `go.sum` as its dependency key.
+
+It runs `dev.ps1 check` for formatting, package tests, vet, and module verification, then `go build ./...` and a check that `go.mod`/`go.sum` stayed unchanged. Go uses readonly module resolution and the installed toolchain. The workflow has read-only repository permissions, a 15-minute job limit, and cancels superseded runs for the same ref. It requires no database configuration or secrets; database runtime validation remains separate from these compilation/static checks. No project test files exist yet.
+
+Reproduce the checks locally with:
+
+```text
+pwsh -File ./dev.ps1 check
+go build -mod=readonly ./...
+git diff --exit-code -- go.mod go.sum
+```
+
+Hosted execution results are reported in GitHub Actions; workflow configuration and local checks do not establish a successful hosted run.
+
 ## Next increment
 
-Add Go validation and the CI foundation as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+After checking the CI result, begin Phase 1 with the user persistence foundation, followed incrementally by registration and authentication, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
