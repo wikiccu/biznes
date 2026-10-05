@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 0 — Product & Engineering Foundation.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, explicit SQL migration workflow, and shared HTTP errors are implemented. Business API conventions are documented; business features and CI remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, explicit SQL migration workflow, shared HTTP errors, and developer commands are implemented. Business API conventions are documented; business features and CI remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -167,19 +167,52 @@ git log --oneline -n 10
 
 ## Useful commands
 
+[dev.ps1](dev.ps1) provides a single entry point using [PowerShell 7 or newer](https://learn.microsoft.com/powershell/scripting/install/installing-powershell). Run it from the repository root, or use its absolute path from another directory; commands run in the repository and restore the caller's directory. Go commands require Go on `PATH`; database commands require Docker Compose and its running Linux engine. No Make, Task, standalone migration CLI, or additional linter is required.
+
 ```text
+pwsh -File ./dev.ps1 check
+```
+
+Omitting the command also runs `check`. It stops at the first failure and exits nonzero; all commands propagate the native tool's exit code. The script does not load `.env` for Go, set credentials, start a database implicitly, or apply migrations during `run`.
+
+| Command | Action |
+| --- | --- |
+| `check` | Check Go formatting, run `go test ./...`, run `go vet ./...`, then verify downloaded modules with `go mod verify`. Does not change files or require PostgreSQL. |
+| `fmt-check` | List unformatted Go files under `cmd` and `internal`; fail if any exist, without changing them. |
+| `fmt` | Format Go files under `cmd` and `internal` with `gofmt -w`. |
+| `test` | Run `go test ./...`; currently checks package compilation because no project test files exist yet. |
+| `lint` | Run the standard Go analyzer, `go vet ./...`. Add another linter only when a concrete gap requires it. |
+| `run` | Run the API with the existing process environment; stop with Ctrl+C. |
+| `db-up` | Start PostgreSQL and wait up to 60 seconds for Compose readiness. Uses the existing Compose configuration and `.env` handling. |
+| `db-down` | Stop/remove the Compose containers and network, retaining the database volume. |
+| `migrate-status` | Report database migration versions and states. |
+| `migrate-up` | Apply pending SQL migrations explicitly. |
+| `migrate-down` | Explicitly roll back one migration; review its `Down` SQL first because rollback may affect data. |
+
+For example, after configuring the Compose password and the matching process `BIZNES_DATABASE_URL`:
+
+```text
+pwsh -File ./dev.ps1 db-up
+pwsh -File ./dev.ps1 migrate-up
+pwsh -File ./dev.ps1 run
+```
+
+Native Go, Compose, and migration commands documented above remain available, including migration `-dir` and `-timeout` flags. To validate without PowerShell:
+
+```text
+gofmt -l cmd internal
 go test ./...
 go vet ./...
-gofmt -l cmd internal
+go mod verify
 git diff
 git diff --check
 git status --short
 ```
 
-`go test ./...` currently checks package compilation; no project test files exist yet. `gofmt -l cmd internal` should produce no output. Gin, pgx, Goose, and their transitive dependencies are recorded in `go.mod` and `go.sum`.
+`gofmt -l cmd internal` must produce no output; unlike `fmt-check`, the native listing command does not fail solely because formatting differs. Gin, pgx, Goose, and their transitive dependencies are recorded in `go.mod` and `go.sum`.
 
-Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing. Compose and migration commands are documented above; broader developer commands will accompany their tools.
+Review new untracked files directly before staging; ordinary `git diff` does not include them. Inspect the staged increment with `git diff --cached` before committing.
 
 ## Next increment
 
-Add minimal developer commands and formatting/linting workflow as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add Go validation and the CI foundation as the next increment in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).

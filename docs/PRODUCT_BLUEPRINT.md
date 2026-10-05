@@ -7,7 +7,7 @@
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
 | Current Phase | Phase 0 — Product & Engineering Foundation |
-| Current Increment | Step 10 — API conventions and shared HTTP errors |
+| Current Increment | Step 11 — Developer commands and formatting/linting |
 | Last Updated | 2026-10-05 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,7 +16,7 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, the `cmd/api` executable, and a separate `cmd/migrate` schema command. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The API verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Shared errors return JSON `404` for unknown routes and `405` with `Allow` for unsupported methods on registered paths. Business API contracts are documented without placeholder endpoints.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, the `cmd/api` executable, a separate `cmd/migrate` schema command, and `dev.ps1` for developer commands. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The API verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Shared errors return JSON `404` for unknown routes and `405` with `Allow` for unsupported methods on registered paths. Business API contracts are documented without placeholder endpoints.
 
 Implemented:
 
@@ -34,14 +34,15 @@ Implemented:
 - Native pgx v5.11.0 pooling in `internal/platform/database`. `BIZNES_DATABASE_URL` is required; `BIZNES_DATABASE_CONNECT_TIMEOUT` and `BIZNES_DATABASE_HEALTH_TIMEOUT` default to `5s` and `2s`, and must be positive durations. Native connection-string options configure the pool budget and lifecycle; invalid pool intervals/minimums fail startup safely. Startup verifies connectivity before HTTP binds. The pool remains available while HTTP drains and closes on success or HTTP failure. pgx may spend approximately 15 additional seconds cleaning up canceled connections to an unresponsive database. Connection strings, credentials, and raw driver errors are omitted from logs and probe responses.
 - An explicit SQL migration command in `cmd/migrate`, using Goose v3.26.0 and the existing pgx pool/configuration. It supports `up`, one-step `down`, and `status`, with PostgreSQL session advisory locking, transactional SQL/version recording, a positive work deadline (default `5m`), and Ctrl+C/SIGTERM cancellation. Cleanup can extend beyond the work deadline. Errors omit raw SQL and credentials; failed SQL migrations identify their version. The initial migration creates the `biznes` application namespace and refuses to drop it when non-empty. Goose owns `public.goose_db_version`; business tables are not implemented. `migrations/README.md` documents naming, commands, deployment permissions, failure handling, and rollback validation. The API never automatically migrates schema.
 - A shared HTTP `WriteError` helper and `ErrorDetail` type in `internal/platform/http/response.go`. Routing and panic recovery use stable public codes, safe messages, optional field/code details, and the middleware's request ID, with JSON content type and `Cache-Control: no-store`. The writer aborts without appending an error or replacing a committed response. Gin supplies `Allow` for method errors. `docs/API_CONVENTIONS.md` defines `/api/v1`, success envelopes, status/error mappings, strict bounded JSON input, validation, bounded page/limit pagination, timestamps, IDs, and money representations. Resource-specific input decoding, validation, success DTOs, and pagination remain work for their first real endpoints.
+- A PowerShell 7 developer entry point, `dev.ps1`, for `check`, `run`, `test`, `lint`, `fmt`, `fmt-check`, `db-up`, `db-down`, and migration up/down/status. It uses existing Go and Compose commands, runs from the repository regardless of the caller's directory, restores that directory, and propagates native exit codes. The default `check` rejects unformatted Go without writing, then runs package tests, standard Go vet analysis, and module verification, stopping at the first failure. Go commands use process configuration; database startup, migration, and rollback remain explicit. `db-down` retains the volume. There is no additional task runner or Go dependency.
 
 Not implemented:
 
 - Business request decoding, resource validation, success DTOs, and pagination handlers.
-- API containerization, broader developer tooling, or CI.
+- API containerization or CI.
 - Authentication, business data, AI, integrations, or any other product capability.
 
-Phase 0 remains in progress. Steps 1–10 are complete. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Migration validation covers fresh history/status, apply/reapply, rollback/reapply, protection of existing schema/data, concurrent migration serialization, lock and SQL deadlines, signal cancellation, safe errors, and connection cleanup. API foundation validation covers JSON routing errors, method/Allow behavior, HEAD responses, request-ID boundaries, log privacy, unchanged probe payloads, dependency outage/recovery, and shutdown cleanup. Validation uses isolated projects and removes their containers and volumes without changing existing databases or creating test/fixture files. Minimal developer commands and formatting/linting workflow are next. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0 remains in progress. Steps 1–11 are complete. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Migration validation covers fresh history/status, apply/reapply, rollback/reapply, protection of existing schema/data, concurrent migration serialization, lock and SQL deadlines, signal cancellation, safe errors, and connection cleanup. API foundation validation covers JSON routing errors, method/Allow behavior, HEAD responses, request-ID boundaries, log privacy, unchanged probe payloads, dependency outage/recovery, and shutdown cleanup. Developer commands were validated on Windows with PowerShell 7.6.5, including invocation outside the repository, caller-directory restoration, default checks, format rejection/repair, invalid commands, missing tools/configuration, native failure codes, real API serving, migrations, and volume retention. Validation uses isolated projects and removes their containers and volumes without changing existing databases or creating test/fixture files. Go validation and the CI foundation are next. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -291,6 +292,7 @@ biznes/
 ├── docs/PRODUCT_BLUEPRINT.md
 ├── .env.example
 ├── compose.yaml
+├── dev.ps1
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -439,10 +441,10 @@ Work in these reviewed increments:
 | 8 | PostgreSQL connection lifecycle, pooling, and health checking. | Complete. |
 | 9 | Migration foundation with documented commands. | Complete; isolated PostgreSQL runtime validation passed. |
 | 10 | Versioned API response, error, validation, and pagination conventions. | Complete; contract documented and shared routing errors validated. |
-| 11 | Formatting/linting and developer commands. | Not started. |
+| 11 | Formatting/linting and developer commands. | Complete; native command wrappers and Windows runtime validation passed. |
 | 12 | Go validation and CI foundation. | Not started. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After the API conventions, the next work is minimal developer commands and formatting/linting workflow. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. After developer commands, the next work is Go validation and the CI foundation. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
@@ -548,7 +550,7 @@ Potential work includes a public API, expanded webhooks, partner integrations, a
 
 ### Validation and tests
 
-Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. The current Go foundation supports `go test ./...`, `go vet ./...`, `go mod verify`, and `gofmt -l cmd internal`; `go run ./cmd/api` starts the server when PostgreSQL and the required connection string are configured. Check liveness/readiness responses during serving, dependency outages/recovery, and shutdown, request IDs, structured logs, safe configuration/connection/binding failures, timeouts, cancellation, and pool cleanup with the built executable. Validate Compose with `docker compose config --quiet`; use isolated projects for authenticated SQL, pool limits, and persistence across container recreation. Validate migration status, apply/reapply, safe rollback and failure behavior, concurrent execution, cancellation/deadlines, schema/history consistency, and connection cleanup against isolated PostgreSQL. Allow for separate driver/lock cleanup when testing cancellation. There are no project test files yet, so `go test` currently checks package compilation. Additional linting and CI remain future increments.
+Validate each increment according to its behavior. Documentation changes need content, naming, link, and diff review. `pwsh -File ./dev.ps1 check` checks Go formatting without writing, then runs `go test ./...`, `go vet ./...`, and `go mod verify`, failing at the first error. `fmt` applies `gofmt -w cmd internal`; `fmt-check` lists unformatted files and returns nonzero, whereas native `gofmt -l cmd internal` requires checking its output manually. Standard `go vet` is the current lint baseline; add another linter for a demonstrated gap. The script requires PowerShell 7; native commands remain documented for other shells. Windows is validated; other hosts await validation. `go run ./cmd/api` starts the server when PostgreSQL and the required connection string are configured. Check liveness/readiness responses during serving, dependency outages/recovery, and shutdown, request IDs, structured logs, safe configuration/connection/binding failures, timeouts, cancellation, and pool cleanup with the built executable. Validate Compose with `docker compose config --quiet`; use isolated projects for authenticated SQL, pool limits, and persistence across container recreation. Validate migration status, apply/reapply, safe rollback and failure behavior, concurrent execution, cancellation/deadlines, schema/history consistency, and connection cleanup against isolated PostgreSQL. Allow for separate driver/lock cleanup when testing cancellation. There are no project test files yet, so `go test` currently checks package compilation. CI remains the next increment.
 
 Meaningful future tests should protect business invariants, database behavior, and important HTTP contracts rather than chase arbitrary coverage or mock everything. The global rule remains in effect: **do not create new test files or modify existing tests without explicit user authorization for that task**. Existing tests may be inspected and run when useful. No tests are being added in this step.
 
@@ -585,7 +587,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment establishes API conventions and shared HTTP errors; developer commands follow separately.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment establishes developer commands and formatting/linting; CI follows separately.
 
 ## Decisions & Changes
 
@@ -604,5 +606,6 @@ Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete
 | 2026-10-05 | Use native pgx v5.11.0 pooling, a required API connection string, and a bounded database readiness ping. | Reuse driver connection/pool/TLS settings, verify the dependency before HTTP starts, keep process liveness independent during outages, and close the pool after HTTP drains. |
 | 2026-10-05 | Use Goose v3.26.0 through an explicit `cmd/migrate` command; create a `biznes` application namespace and keep version history in `public`. | A mature context-aware migration provider with native PostgreSQL advisory locking; pin this stable release to preserve existing API dependency versions. Schema changes and rollback are explicit, versioned, and transactional; the initial rollback protects non-empty schemas. No schema auto-sync or business tables. |
 | 2026-10-05 | Establish the `/api/v1` business contract and share routing/recovery error serialization. | Consistent safe JSON errors with request IDs, native Gin method handling, and explicit success/input/pagination/time/ID conventions. Keep probes simple and implement endpoint-specific decoders/DTOs/pagination with real features, without placeholder routes or additional dependencies. |
+| 2026-10-05 | Use one PowerShell 7 script for developer commands, `gofmt` for formatting, and `go vet` as the lint baseline. | Works with the existing Windows tools without Make/Task or another Go dependency. Checks fail on formatting differences and native failures; native commands remain available in other shells. Database startup and migration/rollback are explicit, and stopping Compose retains the data volume. CI is a separate increment. |
 
 For future major changes, add the date, decision, reason, affected capabilities/phases, and any migration implications. Update the relevant sections and Current State together so the blueprint continues to describe both the destination and the actual repository.
