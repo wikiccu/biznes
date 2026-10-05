@@ -44,9 +44,23 @@ Email uses deterministic `C` collation and requires lowercase printable ASCII, 3
 
 The users rollback takes an `ACCESS EXCLUSIVE` table lock inside Goose's transaction, checks for stored users, and refuses to proceed if any exist. This prevents a concurrent insert from slipping between the check and table removal. Empty-table rollback uses `DROP TABLE ... RESTRICT` to retain dependency protection. Failure leaves users and migration history intact. Never delete production users to make rollback succeed; use a deliberate corrective migration instead.
 
+## Sessions
+
+`00003_create_sessions.sql` creates `biznes.sessions` for durable bearer authentication. `token_hash` is a 32-byte SHA-256 digest primary key, `user_id` references global users with `ON DELETE RESTRICT`, and required creation/last-use/expiry instants have chronological checks. Only token digests are stored. The application supplies the eight-hour expiry and enforces fifteen minutes of idle time at lookup; neither lifetime is a database default or an automatic deletion rule.
+
+The expiry index supports explicit maintenance, for example by an authorized deployment maintenance job:
+
+```sql
+DELETE FROM biznes.sessions WHERE expires_at <= CURRENT_TIMESTAMP;
+```
+
+Expiry is enforced even before maintenance. Idle-expired rows can remain until absolute expiry, and no cleanup worker is introduced. Schedule this maintenance in deployments to prevent expired rows accumulating. Logout deletes only the current session. The API requires users SELECT/INSERT and sessions SELECT/INSERT/UPDATE/DELETE permissions; membership/organization permissions remain separate.
+
+Session rollback takes an `ACCESS EXCLUSIVE` table lock and refuses to drop any stored session rows, including expired ones. Failure retains both schema and history; empty rollback drops only the sessions table/index and preserves users. Never delete active production sessions automatically to force rollback. Apply migrations before starting the updated API, and use a deliberate corrective migration when a populated schema must change.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00003_create_organizations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00004_create_organizations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

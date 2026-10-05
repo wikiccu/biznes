@@ -2,10 +2,7 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"net/mail"
 	"strings"
 	"sync"
@@ -14,16 +11,16 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/argon2"
 )
 
 var (
-	ErrRegistrationBusy        = errors.New("registration limit reached")
-	ErrEmailInUse              = errors.New("email already in use")
-	ErrRegistrationUnavailable = errors.New("registration storage unavailable")
+	ErrCredentialBusy      = errors.New("credential limit reached")
+	ErrEmailInUse          = errors.New("email already in use")
+	ErrIdentityUnavailable = errors.New("identity storage unavailable")
+	ErrUnauthenticated     = errors.New("invalid credentials or session")
 )
 
-type RegistrationInput struct {
+type Credentials struct {
 	Email    string
 	Password string
 }
@@ -33,23 +30,23 @@ type FieldError struct {
 	Code  string
 }
 
-type RegistrationValidationError struct {
+type ValidationError struct {
 	Fields []FieldError
 }
 
-func (*RegistrationValidationError) Error() string { return "invalid registration input" }
+func (*ValidationError) Error() string { return "invalid credentials input" }
 
-// Registrar validates and creates global identities without granting a session.
-type Registrar struct {
+// Service manages global identities and sessions; organization access belongs to memberships.
+type Service struct {
 	pool      *pgxpool.Pool
 	mu        sync.Mutex
 	active    bool
 	nextStart time.Time
 }
 
-func NewRegistrar(pool *pgxpool.Pool) *Registrar { return &Registrar{pool: pool} }
+func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
 
-func (r *Registrar) Register(ctx context.Context, input RegistrationInput) (User, error) {
+func validateCredentials(input Credentials, minimumPasswordLength int) (Credentials, error) {
 	input.Email = strings.TrimSpace(input.Email)
 	var fields []FieldError
 	if input.Email == "" {
@@ -61,48 +58,58 @@ func (r *Registrar) Register(ctx context.Context, input RegistrationInput) (User
 		fields = append(fields, FieldError{"password", "required"})
 	} else if !utf8.ValidString(input.Password) {
 		fields = append(fields, FieldError{"password", "invalid_format"})
-	} else if length := utf8.RuneCountInString(input.Password); length < 15 || length > 128 {
+	} else if length := utf8.RuneCountInString(input.Password); length < minimumPasswordLength || length > 128 {
 		fields = append(fields, FieldError{"password", "out_of_range"})
 	}
 	if len(fields) != 0 {
-		return User{}, &RegistrationValidationError{Fields: fields}
+		return Credentials{}, &ValidationError{Fields: fields}
 	}
 	input.Email = strings.ToLower(input.Email)
-	if ctx.Err() != nil {
-		return User{}, ErrRegistrationUnavailable
-	}
+	return input, nil
+}
 
+func (r *Service) beginPasswordWork() bool {
 	r.mu.Lock()
-	// ponytail: one in-flight registration and one start/second per process; add gateway/client limits before public scale.
+	defer r.mu.Unlock()
+	// ponytail: one password operation and one start/second per process; add trusted-ingress client limits before public scale.
 	if r.active || time.Now().Before(r.nextStart) {
-		r.mu.Unlock()
-		return User{}, ErrRegistrationBusy
+		return false
 	}
 	r.active = true
 	r.nextStart = time.Now().Add(time.Second)
-	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		r.active = false
-		r.mu.Unlock()
-	}()
+	return true
+}
 
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return User{}, errors.New("generate password salt")
+func (r *Service) endPasswordWork() {
+	r.mu.Lock()
+	r.active = false
+	r.mu.Unlock()
+}
+
+func (r *Service) Register(ctx context.Context, input Credentials) (User, error) {
+	input, err := validateCredentials(input, 15)
+	if err != nil {
+		return User{}, err
 	}
-	// Argon2id v19: OWASP's 19 MiB / two passes / one lane minimum.
-	key := argon2.IDKey([]byte(input.Password), salt, 2, 19*1024, 1, 32)
-	hash := fmt.Sprintf("$argon2id$v=%d$m=19456,t=2,p=1$%s$%s", argon2.Version,
-		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
+	if ctx.Err() != nil {
+		return User{}, ErrIdentityUnavailable
+	}
+	if !r.beginPasswordWork() {
+		return User{}, ErrCredentialBusy
+	}
+	defer r.endPasswordWork()
+	hash, err := hashPassword(input.Password)
+	if err != nil {
+		return User{}, err
+	}
 	// Hashing has fixed costs; cancellation prevents subsequent persistence.
 	if ctx.Err() != nil {
-		return User{}, ErrRegistrationUnavailable
+		return User{}, ErrIdentityUnavailable
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var user User
-	err := r.pool.QueryRow(writeCtx, `
+	err = r.pool.QueryRow(writeCtx, `
 		INSERT INTO biznes.users (email, password_hash) VALUES ($1, $2)
 		RETURNING id, email, created_at, updated_at`, input.Email, hash).
 		Scan(&user.ID, &user.Email, &user.CreatedAt, &user.UpdatedAt)
@@ -111,7 +118,7 @@ func (r *Registrar) Register(ctx context.Context, input RegistrationInput) (User
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "users_email_unique" {
 			return User{}, ErrEmailInUse
 		}
-		return User{}, ErrRegistrationUnavailable
+		return User{}, ErrIdentityUnavailable
 	}
 	return user, nil
 }

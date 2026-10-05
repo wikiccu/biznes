@@ -16,50 +16,59 @@ import (
 	"github.com/wikiccu/biznes/internal/identity"
 )
 
-type registeredUser struct {
+type publicUser struct {
 	ID        string    `json:"id"`
 	Email     string    `json:"email"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func registration(registrar *identity.Registrar) gin.HandlerFunc {
+func userDTO(user identity.User) publicUser {
+	return publicUser{user.ID, user.Email, user.CreatedAt.UTC(), user.UpdatedAt.UTC()}
+}
+
+func registration(service *identity.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		input, ok := registrationInput(c)
+		input, ok := credentialsInput(c)
 		if !ok {
 			return
 		}
-		user, err := registrar.Register(c.Request.Context(), input)
+		user, err := service.Register(c.Request.Context(), input)
 		if err != nil {
-			var validation *identity.RegistrationValidationError
-			switch {
-			case errors.As(err, &validation):
-				details := make([]ErrorDetail, 0, len(validation.Fields))
-				for _, field := range validation.Fields {
-					details = append(details, ErrorDetail{Field: field.Field, Code: field.Code})
-				}
-				WriteError(c, http.StatusUnprocessableEntity, "validation_failed", "Please correct the highlighted fields.", details...)
-			case errors.Is(err, identity.ErrRegistrationBusy):
-				c.Header("Retry-After", "1")
-				WriteError(c, http.StatusTooManyRequests, "rate_limited", "Registration is busy. Please retry later.")
-			case errors.Is(err, identity.ErrEmailInUse):
-				WriteError(c, http.StatusConflict, "conflict", "Registration could not be completed.")
-			case errors.Is(err, identity.ErrRegistrationUnavailable):
-				WriteError(c, http.StatusServiceUnavailable, "service_unavailable", "Registration is temporarily unavailable.")
-			default:
-				WriteError(c, http.StatusInternalServerError, "internal_error", "An internal error occurred.")
-			}
+			writeIdentityError(c, err)
 			return
 		}
 		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusCreated, struct {
-			Data registeredUser `json:"data"`
-		}{registeredUser{user.ID, user.Email, user.CreatedAt.UTC(), user.UpdatedAt.UTC()}})
+		c.JSON(http.StatusCreated, gin.H{"data": userDTO(user)})
 	}
 }
 
-func registrationInput(c *gin.Context) (identity.RegistrationInput, bool) {
-	var input identity.RegistrationInput
+func writeIdentityError(c *gin.Context, err error) {
+	var validation *identity.ValidationError
+	switch {
+	case errors.As(err, &validation):
+		details := make([]ErrorDetail, 0, len(validation.Fields))
+		for _, field := range validation.Fields {
+			details = append(details, ErrorDetail{Field: field.Field, Code: field.Code})
+		}
+		WriteError(c, http.StatusUnprocessableEntity, "validation_failed", "Please correct the highlighted fields.", details...)
+	case errors.Is(err, identity.ErrCredentialBusy):
+		c.Header("Retry-After", "1")
+		WriteError(c, http.StatusTooManyRequests, "rate_limited", "Credential service is busy. Please retry later.")
+	case errors.Is(err, identity.ErrEmailInUse):
+		WriteError(c, http.StatusConflict, "conflict", "Registration could not be completed.")
+	case errors.Is(err, identity.ErrUnauthenticated):
+		c.Header("WWW-Authenticate", `Bearer realm="biznes"`)
+		WriteError(c, http.StatusUnauthorized, "unauthenticated", "Authentication is required or invalid.")
+	case errors.Is(err, identity.ErrIdentityUnavailable):
+		WriteError(c, http.StatusServiceUnavailable, "service_unavailable", "Identity service is temporarily unavailable.")
+	default:
+		WriteError(c, http.StatusInternalServerError, "internal_error", "An internal error occurred.")
+	}
+}
+
+func credentialsInput(c *gin.Context) (identity.Credentials, bool) {
+	var input identity.Credentials
 	if c.Request.URL.RawQuery != "" || c.Request.URL.ForceQuery {
 		WriteError(c, http.StatusBadRequest, "invalid_request", "Query parameters are not accepted.")
 		return input, false
@@ -83,7 +92,7 @@ func registrationInput(c *gin.Context) (identity.RegistrationInput, bool) {
 		WriteError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "The request body is too large.")
 		return input, false
 	}
-	if err != nil || !utf8.Valid(body) || !validUnicodeEscapes(body) || !decodeRegistration(body, &input) {
+	if err != nil || !utf8.Valid(body) || !validUnicodeEscapes(body) || !decodeCredentials(body, &input) {
 		WriteError(c, http.StatusBadRequest, "invalid_request", "Provide one JSON object with email and password string fields.")
 		return input, false
 	}
@@ -91,7 +100,7 @@ func registrationInput(c *gin.Context) (identity.RegistrationInput, bool) {
 }
 
 // Token decoding enforces exact field names and rejects duplicate keys/nulls.
-func decodeRegistration(body []byte, input *identity.RegistrationInput) bool {
+func decodeCredentials(body []byte, input *identity.Credentials) bool {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {

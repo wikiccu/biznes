@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with hosted CI passing. Phase 1 implements global user persistence and registration. Login, sessions, organizations, and financial features remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with hosted foundation CI passing. Phase 1 implements global user persistence, registration, login, and persistent bearer sessions. Organizations and financial features remain planned. Hosted validation status for subsequent commits is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,7 +81,7 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The first migration creates the `biznes` schema; the second creates `biznes.users`. Goose tracks versions in `public.goose_db_version`. The schema rollback refuses to drop a non-empty schema, and the users rollback locks the table and refuses to remove stored users. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The first migration creates the `biznes` schema, the second creates `biznes.users`, and the third creates `biznes.sessions`. Goose tracks versions in `public.goose_db_version`. The schema rollback refuses to drop a non-empty schema; users/session rollbacks lock their tables and refuse to remove stored rows. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### User persistence
 
@@ -95,9 +95,21 @@ Stored emails are lowercase printable ASCII, 3–254 bytes, with one `@` and non
 
 Passwords contain 15–128 Unicode code points. Whitespace and Unicode are preserved exactly; there are no composition rules, normalization, or truncation. [OWASP's password storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) informs the Argon2id policy: 19 MiB, two passes, one lane, a fresh random 16-byte salt, and a 32-byte verifier in PHC format. The implementation imports the existing `golang.org/x/crypto v0.48.0` directly without changing dependency versions.
 
-Successful registration returns `201` with `data.id`, canonical `data.email`, and UTC `data.created_at`/`data.updated_at`. It grants no session or organization access. Database uniqueness protects concurrent creation; duplicates return a safe `409` without changing the account. Each API process admits one registration at a time and one start per second, with `429`/`Retry-After: 1` for excess work and a five-second database write deadline. Responses use `Cache-Control: no-store`; passwords, verifiers, and emails are omitted from application logs.
+Successful registration returns `201` with `data.id`, canonical `data.email`, and UTC `data.created_at`/`data.updated_at`. It grants no session or organization access. Database uniqueness protects concurrent creation; duplicates return a safe `409` without changing the account. Each API process shares one password operation at a time and one start per second between registration and login, with `429`/`Retry-After: 1` for excess work and five-second database operation deadlines. Responses use `Cache-Control: no-store`; passwords, verifiers, and emails are omitted from application logs.
 
-Before public deployment, add email ownership verification, common/breached password screening, and client-aware limits at the trusted ingress. The process-wide limit bounds hashing work but can be exhausted by one caller. The distinct `201`/`409` responses reveal email availability; an ownership-verification flow should provide indistinguishable registration responses. Deploy credential endpoints over HTTPS. Authentication/session handling is the next increment.
+Before public deployment, add email ownership verification, common/breached password screening, and client-aware limits at the trusted ingress. The process-wide limit bounds hashing work but can be exhausted by one caller. The distinct `201`/`409` responses reveal email availability; an ownership-verification flow should provide indistinguishable registration responses. Deploy credential endpoints over HTTPS.
+
+### Authentication and sessions
+
+`POST /api/v1/auth/login` accepts the same strict email/password JSON contract as registration. Login passwords must be non-empty and at most 128 Unicode code points; signup strength rules do not reject a short login candidate. It normalizes email casing/outer whitespace and preserves passwords exactly. Unknown accounts, wrong passwords, and unsupported stored verifiers return the same safe `401`; unknown/unsupported verifiers still run the fixed-cost Argon2id derivation. Stored cost parameters cannot select arbitrary hashing workloads.
+
+Login returns `200` with `data.user`, a fresh `data.access_token`, `data.token_type: "Bearer"`, and UTC `data.expires_at`. Tokens contain 32 cryptographically random bytes encoded as 43 unpadded Base64URL characters. [The sessions migration](migrations/00003_create_sessions.sql) stores only the SHA-256 digest of the decoded token bytes, the user reference, and creation/last-use/expiry instants. Each login creates an independent session with an eight-hour absolute lifetime and a fifteen-minute idle timeout. Login does not grant organization access.
+
+Send the token in one `Authorization: Bearer <token>` header to `GET /api/v1/auth/me` or `POST /api/v1/auth/logout`. Both accept an empty body and no query string. `me` returns the public user DTO; logout returns an empty `204` and removes the current session. Missing, malformed, unknown, expired, or revoked tokens return `401` with a Bearer challenge. Credentials are accepted only from the authorization header for these routes; no session cookie is set. See [the authentication contract](docs/API_CONVENTIONS.md#authentication-and-sessions).
+
+Session checks use PostgreSQL on every authorized request, refresh idle activity without extending the absolute expiry, and fail with safe `503` errors when storage is unavailable. Sessions and revocation are shared across API processes and survive API restarts. Requests already authenticated may finish after logout. Expiry requires a new login; there is no refresh endpoint. Tokens, passwords, verifiers, and credential input are omitted from application logs, and credential responses use `Cache-Control: no-store`.
+
+Expired rows remain unusable and can be removed through explicit [session maintenance](migrations/README.md#sessions); schedule this maintenance in deployments to bound table growth. Recovery, MFA, device/session management, and stronger policies for sensitive financial operations remain future work. This increment adds no environment settings, signing keys, or dependencies.
 
 ### Configuration
 
@@ -155,7 +167,10 @@ Startup configuration failures always emit an `ERROR` record and exit with code 
 | `GET /health` | `200` with `{"status":"ok"}` | Process liveness; does not check dependencies. |
 | `GET /ready` | `200` with `{"status":"ready"}` | The lifecycle context is active and a bounded PostgreSQL ping succeeds. |
 | `GET /ready` during an outage or shutdown | `503` with `{"status":"not_ready"}` | The database check fails or times out, the request is canceled, or shutdown begins while the handler is active. |
-| `POST /api/v1/auth/register` | `201` with a public user `data` object | Validated identity creation with a securely hashed password; no login/session yet. |
+| `POST /api/v1/auth/register` | `201` with a public user `data` object | Validated identity creation with a securely hashed password, without granting a session. |
+| `POST /api/v1/auth/login` | `200` with user, bearer token, and expiry in `data` | Credential verification and durable session creation. |
+| `GET /api/v1/auth/me` | `200` with a public user `data` object | The supplied bearer session is active. |
+| `POST /api/v1/auth/logout` | Empty `204` | Revoke the current active bearer session. |
 
 Shutdown closes the listening socket, so new probe connections may fail instead of receiving a response. Liveness remains successful during database outages and for requests served during draining. The readiness ping observes both request cancellation and application shutdown without canceling other in-flight request contexts. Readiness can recover after a database outage without restarting the API; it verifies connectivity, not application schema. Unregistered paths, including `/` and `/api/v1`, return a JSON `404` error. Unsupported methods on registered paths return a JSON `405` error with `Allow`; only `GET` is currently registered for the probes.
 
@@ -163,7 +178,7 @@ Every handled request receives an `X-Request-ID`. A single supplied value is acc
 
 Shared errors use `{"error":{"code":"...","message":"...","request_id":"..."}}`, with optional field/code `details`. They return `application/json` and `Cache-Control: no-store`. Recovery uses the same writer for a safe `500` with code `internal_error` before response commitment; after commitment it aborts without appending a second body or changing the status. Panic details and stack traces are omitted. Trusted proxy headers and automatic trailing-slash redirects are disabled.
 
-The [API conventions](docs/API_CONVENTIONS.md) define `/api/v1`, `data`/optional `meta` success envelopes, status/error mappings, bounded JSON input, validation, pagination (default page `1`, limit `20`, caps `10000`/`100`), UTC timestamps, and opaque UUID IDs. Registration implements its input and success contract; pagination will accompany the first list endpoint. There are no placeholder endpoints.
+The [API conventions](docs/API_CONVENTIONS.md) define `/api/v1`, `data`/optional `meta` success envelopes, status/error mappings, bounded JSON input, validation, pagination (default page `1`, limit `20`, caps `10000`/`100`), UTC timestamps, and opaque UUID IDs. Registration and authentication implement their input and success contracts; pagination will accompany the first list endpoint. There are no placeholder endpoints.
 
 ### Git workflow
 
@@ -248,4 +263,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Add authentication and session/token lifecycle, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Continue using bounded credential processing and safe responses; organizations and memberships follow in their own increment.
+Add organizations, memberships, and baseline tenant/permission enforcement, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Global identity authentication must remain separate from authorization to business-owned records.

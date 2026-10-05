@@ -29,7 +29,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	router.NoMethod(func(c *gin.Context) {
 		WriteError(c, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not supported for this resource.")
 	})
-	router.Group("/api/v1").POST("/auth/register", registration(identity.NewRegistrar(pool)))
+	identityService := identity.NewService(pool)
+	auth := router.Group("/api/v1/auth")
+	auth.POST("/register", registration(identityService))
+	auth.POST("/login", login(identityService))
+	protected := auth.Group("", emptyAuthRequest, sessionAuthentication(identityService))
+	protected.GET("/me", currentUser)
+	protected.POST("/logout", logout(identityService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
