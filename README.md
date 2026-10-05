@@ -6,9 +6,9 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 ## Project status
 
-**Current phase: Phase 0 — Product & Engineering Foundation (implementation complete).**
+**Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). The Go module, typed environment configuration, structured JSON logging, Gin HTTP server lifecycle, health/readiness endpoints, local PostgreSQL Compose environment, PostgreSQL connection pool, explicit SQL migration workflow, shared HTTP errors, developer commands, and Go CI workflow are implemented. Business API conventions are documented; business features remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with the first hosted CI run passing. Phase 1 begins with a global user persistence model and migration. Registration, login, organizations, and financial features remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,7 +81,13 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The initial migration creates the `biznes` schema for future application objects; Goose tracks versions in `public.goose_db_version`. There are no business tables yet. Rollbacks are explicit and may affect data; the initial rollback refuses to drop a non-empty schema. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The first migration creates the `biznes` schema; the second creates `biznes.users`. Goose tracks versions in `public.goose_db_version`. The schema rollback refuses to drop a non-empty schema, and the users rollback locks the table and refuses to remove stored users. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+
+### User persistence
+
+Users are global identities; future memberships will grant access to organizations. [The migration](migrations/00002_create_users.sql) supplies native PostgreSQL UUIDv4 IDs, unique canonical email addresses, an opaque password verifier, and `timestamptz` creation/update defaults. [The Go model](internal/identity/user.go) mirrors these fields and excludes `PasswordHash` from JSON; handlers should still use explicit response types.
+
+Stored emails are lowercase printable ASCII, 3–254 bytes, with one `@` and non-empty local/domain parts. Registration will normalize and fully validate input before insertion; provider-specific dot/plus rewriting is not allowed. Internationalized addresses and phone login remain future choices. Password verifiers must be non-empty printable ASCII, at most 1024 bytes; these storage checks do not establish cryptographic strength. Only trusted server code may write an encoded password hash, never plaintext. Hashing and account creation APIs are not implemented in this increment. Future update statements must maintain `updated_at`; there is no timestamp trigger or automatic schema migration.
 
 ### Configuration
 
@@ -231,4 +237,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-After checking the CI result, begin Phase 1 with the user persistence foundation, followed incrementally by registration and authentication, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap).
+Add registration with bounded input validation, canonical email handling, secure password hashing, and explicit PostgreSQL persistence, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Authentication follows separately.

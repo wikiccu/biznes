@@ -30,15 +30,23 @@ Database operations emit JSON records to stderr at INFO; failures emit ERROR and
 
 ## Schema and history
 
-`00001_create_biznes_schema.sql` creates the `biznes` namespace for application objects. Future migrations and queries should qualify application objects as `biznes.<name>`. No business tables exist yet. The migration fails if that schema already exists, so an existing schema is not silently adopted. Its rollback uses `DROP SCHEMA ... RESTRICT`, which refuses to remove a non-empty schema.
+`00001_create_biznes_schema.sql` creates the `biznes` namespace for application objects. Migrations and queries should qualify application objects as `biznes.<name>`. The migration fails if that schema already exists, so an existing schema is not silently adopted. Its rollback uses `DROP SCHEMA ... RESTRICT`, which refuses to remove a non-empty schema.
 
 Goose owns `public.goose_db_version`, independently of the connection's `search_path`. Its PostgreSQL session advisory lock serializes migration execution by commands using this workflow. Leave history management to Goose. Each SQL migration runs in a transaction by default, with its version recorded atomically; an error rolls back that migration. Earlier successful migrations in the same `up` run remain applied.
 
 Migrations run explicitly before application deployment; API startup never migrates or synchronizes schema. `/ready` continues to check connectivity, not schema version. Use migration credentials with DDL/history-table permissions; a deployed API role should receive only the access needed by implemented features. This increment does not provision deployment roles.
 
+## User persistence
+
+`00002_create_users.sql` creates global identities in `biznes.users`: UUIDv4 `id` defaults from PostgreSQL's built-in `gen_random_uuid()`, canonical unique `email`, encoded `password_hash`, and required `created_at`/`updated_at` instants with transaction timestamp defaults. No extension or Go UUID dependency is required. Business ownership will be represented through memberships, not a tenant column on users.
+
+Email uses deterministic `C` collation and requires lowercase printable ASCII, 3–254 bytes, and exactly one `@` with non-empty parts. These are storage invariants, not a complete email parser. Registration must normalize and validate input before writing, preserve dots and plus tags, and handle uniqueness conflicts. The password verifier is required, printable ASCII, and bounded to 1024 bytes; trusted server code must generate a secure encoded hash. This migration does not implement hashing or authenticate users. Update statements must explicitly maintain `updated_at` when profile/credential mutation is introduced.
+
+The users rollback takes an `ACCESS EXCLUSIVE` table lock inside Goose's transaction, checks for stored users, and refuses to proceed if any exist. This prevents a concurrent insert from slipping between the check and table removal. Empty-table rollback uses `DROP TABLE ... RESTRICT` to retain dependency protection. Failure leaves users and migration history intact. Never delete production users to make rollback succeed; use a deliberate corrective migration instead.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00002_create_users.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00003_create_organizations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

@@ -6,8 +6,8 @@
 | Product | biznes |
 | Repository | `biznes` |
 | Architecture | Modular Monolith |
-| Current Phase | Phase 0 — Product & Engineering Foundation (implementation complete) |
-| Current Increment | Step 12 — Go validation and CI foundation |
+| Current Phase | Phase 1 — Business Core MVP |
+| Current Increment | Step 1 — User persistence model |
 | Last Updated | 2026-10-05 |
 
 This document describes the **intended final product**, its architecture direction, and an incremental path toward it. It is the source of truth for product vision, scope, feature planning, engineering decisions, and onboarding future developers and AI coding agents. Planned capabilities are not implemented capabilities.
@@ -16,7 +16,7 @@ Update this document when product direction, module boundaries, major technical 
 
 ## Current State
 
-The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, the `cmd/api` executable, a separate `cmd/migrate` schema command, `dev.ps1` for developer commands, and a GitHub Actions Go validation workflow. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The API verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Shared errors return JSON `404` for unknown routes and `405` with `Allow` for unsupported methods on registered paths. Business API contracts are documented without placeholder endpoints.
+The repository contains this blueprint, a concise `README.md`, the Go module `github.com/wikiccu/biznes`, the `cmd/api` executable, a separate `cmd/migrate` schema command, `dev.ps1` for developer commands, a GitHub Actions Go validation workflow, and the initial global user persistence model. Development takes place on `main`, with `origin` configured as `https://github.com/wikiccu/biznes.git`. The API verifies its PostgreSQL pool before serving HTTP, with transport timeouts, request IDs, request logging, panic recovery, context-driven graceful shutdown, process liveness, and database readiness. Shared errors return JSON `404` for unknown routes and `405` with `Allow` for unsupported methods on registered paths. Business API contracts are documented without placeholder endpoints.
 
 Implemented:
 
@@ -36,14 +36,15 @@ Implemented:
 - A shared HTTP `WriteError` helper and `ErrorDetail` type in `internal/platform/http/response.go`. Routing and panic recovery use stable public codes, safe messages, optional field/code details, and the middleware's request ID, with JSON content type and `Cache-Control: no-store`. The writer aborts without appending an error or replacing a committed response. Gin supplies `Allow` for method errors. `docs/API_CONVENTIONS.md` defines `/api/v1`, success envelopes, status/error mappings, strict bounded JSON input, validation, bounded page/limit pagination, timestamps, IDs, and money representations. Resource-specific input decoding, validation, success DTOs, and pagination remain work for their first real endpoints.
 - A PowerShell 7 developer entry point, `dev.ps1`, for `check`, `run`, `test`, `lint`, `fmt`, `fmt-check`, `db-up`, `db-down`, and migration up/down/status. It uses existing Go and Compose commands, runs from the repository regardless of the caller's directory, restores that directory, and propagates native exit codes. The default `check` rejects unformatted Go without writing, then runs package tests, standard Go vet analysis, and module verification, stopping at the first failure. Go commands use process configuration; database startup, migration, and rollback remain explicit. `db-down` retains the volume. There is no additional task runner or Go dependency.
 - A GitHub Actions workflow in `.github/workflows/go.yml` for pushes to `main`, pull requests targeting `main`, and manual dispatch. One Ubuntu 24.04 job reuses `dev.ps1 check`, builds all Go packages, and fails if module files changed. It selects Go from `go.mod`, caches using `go.sum`, pins checkout/setup-go to verified release commit SHAs, uses read-only repository permissions, limits the job to 15 minutes, and cancels superseded runs for the same ref. Go uses readonly module resolution and the installed toolchain. The workflow requires no database configuration or secrets and adds no project tests or Go dependencies.
+- A global identity persistence model in `internal/identity/user.go` and `migrations/00002_create_users.sql`. `biznes.users` has native UUIDv4 IDs, canonical globally unique lowercase ASCII emails, an opaque required password verifier, and required creation/update instants with database defaults. Email storage is bounded to 3–254 bytes with one `@` and non-empty parts; encoded verifier storage is printable ASCII and bounded to 1024 bytes. Registration must perform normalization, complete email validation, and secure hashing before insertion. The Go model excludes `PasswordHash` from JSON; future handlers use explicit response types. No credential hashing, persistence service, user API, organization/membership tables, or authentication is introduced yet. Update statements must maintain `updated_at`. Rollback takes a table lock and refuses to remove stored users, retaining transaction/history consistency and dependency protection.
 
 Not implemented:
 
 - Business request decoding, resource validation, success DTOs, and pagination handlers.
 - API containerization.
-- Authentication, business data, AI, integrations, or any other product capability.
+- Registration, authentication, organizations/memberships, financial data, AI, integrations, or other user-facing business capabilities.
 
-Phase 0's twelve foundation increments are implemented. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Migration validation covers fresh history/status, apply/reapply, rollback/reapply, protection of existing schema/data, concurrent migration serialization, lock and SQL deadlines, signal cancellation, safe errors, and connection cleanup. API foundation validation covers JSON routing errors, method/Allow behavior, HEAD responses, request-ID boundaries, log privacy, unchanged probe payloads, dependency outage/recovery, and shutdown cleanup. Developer commands were validated on Windows with PowerShell 7.6.5, including invocation outside the repository, caller-directory restoration, default checks, format rejection/repair, invalid commands, missing tools/configuration, native failure codes, real API serving, migrations, and volume retention. The CI workflow is checked with actionlint; its Go checks and Windows/Linux builds were validated locally. Actual hosted execution is reported separately in [GitHub Actions](https://github.com/wikiccu/biznes/actions/workflows/go.yml); configuration/local validation alone does not establish a passing hosted run. Runtime validation uses isolated projects and removes their containers and volumes without changing existing databases or creating test/fixture files. After confirming CI succeeds, Phase 1 begins with user persistence, followed incrementally by registration and authentication. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
+Phase 0's twelve foundation increments are complete; the [first hosted CI run for `c09a93b`](https://github.com/wikiccu/biznes/actions/runs/37362894429) passed. The pinned PostgreSQL image download succeeded on 2026-10-05, resolving the earlier regional `403` validation blocker. Runtime validation covers authenticated SQL, UTF8/Persian data, pool limits, startup/configuration failures, cancellation, dependency outages and recovery, shutdown cleanup, and named-volume persistence across container recreation. Migration validation covers fresh history/status, apply/reapply, rollback/reapply, protection of existing schema/data, concurrent migration serialization, lock and SQL deadlines, signal cancellation, safe errors, and connection cleanup. API foundation validation covers JSON routing errors, method/Allow behavior, HEAD responses, request-ID boundaries, log privacy, unchanged probe payloads, dependency outage/recovery, and shutdown cleanup. Developer commands were validated on Windows with PowerShell 7.6.5, including invocation outside the repository, caller-directory restoration, default checks, format rejection/repair, invalid commands, missing tools/configuration, native failure codes, real API serving, migrations, and volume retention. The CI workflow was checked with actionlint and local Go checks/builds. Actual hosted results remain authoritative in GitHub Actions. Phase 1's first increment adds user persistence, with PostgreSQL validation of schema/defaults, uniqueness, canonical email/hash bounds, null rejection, safe non-empty rollback, empty rollback/reapply, concurrent insert protection, and connection cleanup. Runtime validation uses isolated projects and removes their containers and volumes without changing existing databases or creating test/fixture files. Registration follows separately. Planned stack components and design conventions below describe implementation direction, not existing runtime behavior.
 
 ## 1. Product Vision
 
@@ -273,7 +274,7 @@ biznes Modular Monolith
 
 Domain modules own their application behavior, persistence, and transport adapters. Other modules call deliberate application interfaces rather than reaching into private repositories. Shared platform code serves concrete technical needs; it must not become a generic dumping ground for domain logic.
 
-Candidate future modules are `identity`, `organization`, `contact`, `finance`, `receivables`, `payables`, `obligations`, `documents`, `assistant`, `actions`, `analytics`, `notifications`, `integrations`, `billing`, and `audit`. Names and boundaries may evolve with implemented use cases. Do not create empty modules, provider interfaces, or frameworks just to mirror this list.
+The `identity` module starts with the user persistence model. Candidate future modules are `organization`, `contact`, `finance`, `receivables`, `payables`, `obligations`, `documents`, `assistant`, `actions`, `analytics`, `notifications`, `integrations`, `billing`, and `audit`. Names and boundaries may evolve with implemented use cases. Do not create empty modules, provider interfaces, or frameworks just to mirror this list.
 
 Initial directory direction, introduced only as files become necessary:
 
@@ -284,6 +285,7 @@ biznes/
 │   ├── api/
 │   └── migrate/
 ├── internal/
+│   ├── identity/
 │   ├── platform/
 │   │   ├── config/
 │   │   ├── database/
@@ -357,7 +359,7 @@ Specify endpoint contracts with their implementation. Keep handlers thin: parse,
 
 ### Source of truth and ownership
 
-PostgreSQL is the initial authoritative store. Define constraints and indexes through reviewable migrations. The [migration workflow](../migrations/README.md) uses the pinned Goose library and explicit commands before deployment, with immutable sequential SQL files and transactional version recording. The initial migration creates the `biznes` namespace; qualify application objects as `biznes.<name>`. Goose's history table lives in `public`. There are no business tables yet, and database readiness still checks connectivity rather than schema version.
+PostgreSQL is the initial authoritative store. Define constraints and indexes through reviewable migrations. The [migration workflow](../migrations/README.md) uses the pinned Goose library and explicit commands before deployment, with immutable sequential SQL files and transactional version recording. The first migration creates the `biznes` namespace and the second creates `biznes.users`; qualify application objects as `biznes.<name>`. Goose's history table lives in `public`. User rollback refuses to remove stored identities and holds a table lock to protect concurrent writers. Organization/financial tables are not implemented, and database readiness still checks connectivity rather than schema version.
 
 ```text
 User ── Membership ── Organization
@@ -370,6 +372,8 @@ User ── Membership ── Organization
 ```
 
 A user is a global identity. A membership links a user to an organization with role/permissions. Contacts and financial records belong to an organization; references between them must stay within that organization. A user may have several memberships, including an accountant's client access. Branches later refine organization scope rather than replace it.
+
+Initial identities use canonical lowercase ASCII email addresses, with deterministic `C` collation and database uniqueness. Registration will normalize casing and surrounding input whitespace, fully validate addresses, and preserve dots/plus tags. Internationalized email and phone login require a deliberate later normalization/authentication policy. Store only an encoded server-generated password verifier; the schema's printable/length checks do not validate cryptographic strength. Password hashing belongs to the registration increment, and credential values must never be logged or exposed through responses. The persistence model's JSON exclusion is a safeguard, not a substitute for explicit response DTOs.
 
 Every business-owned row requires an `organization_id`. Resolve scope from authenticated, authorized context; apply it to reads, writes, aggregates, imports, attachments, jobs, AI tools, and exports. Validate cross-record ownership and use database constraints where possible to prevent cross-tenant references. IDs, hidden UI elements, and LLM instructions do not provide isolation.
 
@@ -391,7 +395,7 @@ Jalali conversion belongs to input/presentation. Do not use Jalali strings as fu
 
 ### Identifiers and integrity
 
-Use opaque UUID primary identifiers consistently. Select a mature generation mechanism in the implementation step rather than adding a dependency now. References should be constrained and indexed appropriately. UUIDs do not replace access control.
+Use opaque UUID primary identifiers consistently. Users use PostgreSQL's built-in `gen_random_uuid()` for UUIDv4 defaults without an extension or Go UUID dependency. References should be constrained and indexed appropriately. UUIDs do not replace access control.
 
 Use explicit database transactions when operations must be atomic, such as recording a payment with its allocation or later updating a credit ledger. Propagate `context.Context` across request, application, database, and external-call boundaries. Define correction, deletion, retention, and audit semantics before implementing financial record mutations; never delete production data automatically.
 
@@ -444,15 +448,23 @@ Work in these reviewed increments:
 | 9 | Migration foundation with documented commands. | Complete; isolated PostgreSQL runtime validation passed. |
 | 10 | Versioned API response, error, validation, and pagination conventions. | Complete; contract documented and shared routing errors validated. |
 | 11 | Formatting/linting and developer commands. | Complete; native command wrappers and Windows runtime validation passed. |
-| 12 | Go validation and CI foundation. | Implemented; workflow lint and local Go validation/builds passed. Hosted results are reported in GitHub Actions. |
+| 12 | Go validation and CI foundation. | Complete; workflow/local checks and the first hosted run for `c09a93b` passed. |
 
-Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. All Phase 0 increments are implemented; confirm the hosted CI result before beginning Phase 1. Resolve validation failures before adding business capabilities. Phase 0 does not include product features.
+Validate and review each increment, create one meaningful Conventional Commit, attempt to push to `origin/main` when configured, then stop until the human says `continue`. All Phase 0 increments and their first hosted CI run passed. Resolve validation failures before adding business capabilities. Phase 0 does not include product features.
 
 ### Phase 1 — Business Core MVP
 
 **Goal:** A user can create a business and record fundamental information manually.
 
 Implement authentication, organizations, membership, contacts with customer/supplier roles, income, expenses, basic transactions, categories, and balances. Start with the user persistence foundation, then add registration and authentication as separate useful increments. Apply tenant isolation and baseline permission checks from the start. Keep the UX and domain simple; do not build complete accounting.
+
+| Step | Cohesive increment | Current status |
+| --- | --- | --- |
+| 1 | Global user persistence model and schema constraints. | Complete; isolated PostgreSQL runtime validation passed. |
+| 2 | Registration, bounded input validation, canonical email handling, and secure password hashing. | Next. |
+| 3 | Authentication and session/token lifecycle. | Planned. |
+| 4 | Organizations, memberships, and baseline tenant/permission enforcement. | Planned. |
+| 5 | Contacts, financial records, categories, and balances in useful increments. | Planned. |
 
 **Outcome:** An authorized user can maintain reliable records for their own business, with balances that reconcile to those records.
 
@@ -589,7 +601,7 @@ Report the current branch and phase, step completed, files added/modified, imple
 
 ### Explicitly outside the initial foundation
 
-Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current increment establishes the Go CI foundation; user persistence follows in Phase 1 after CI succeeds.
+Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete accounting, Redis, Kafka, microservices, Kubernetes, event sourcing, CQRS, or a mobile application in Phase 0. They belong to later validated requirements. The current Phase 1 increment establishes user persistence; registration follows separately.
 
 ## Decisions & Changes
 
@@ -610,5 +622,6 @@ Do not implement AI chat, OCR, billing, credits, SMS, tax integrations, complete
 | 2026-10-05 | Establish the `/api/v1` business contract and share routing/recovery error serialization. | Consistent safe JSON errors with request IDs, native Gin method handling, and explicit success/input/pagination/time/ID conventions. Keep probes simple and implement endpoint-specific decoders/DTOs/pagination with real features, without placeholder routes or additional dependencies. |
 | 2026-10-05 | Use one PowerShell 7 script for developer commands, `gofmt` for formatting, and `go vet` as the lint baseline. | Works with the existing Windows tools without Make/Task or another Go dependency. Checks fail on formatting differences and native failures; native commands remain available in other shells. Database startup and migration/rollback are explicit, and stopping Compose retains the data volume. CI is a separate increment. |
 | 2026-10-05 | Add one Ubuntu 24.04 GitHub Actions job, reusing developer checks and pinning checkout v7.0.1/setup-go v7.0.0 to release commits. | Select Go from `go.mod`, cache by `go.sum`, validate formatting/tests/vet/modules/builds without a database or secrets, and reject changed module files. Read-only permissions, a job deadline, and cancellation bound the workflow. Phase 0 implementation is complete; confirm hosted CI before beginning user persistence in Phase 1. |
+| 2026-10-05 | Begin Phase 1 with a global user model and explicit users migration, after hosted Phase 0 CI passed. | Use native PostgreSQL UUIDv4 defaults, canonical unique ASCII email identities, bounded opaque password verifiers, and creation/update instants. Keep hashing, registration, authentication, and organization membership separate. Refuse non-empty rollback under a table lock to preserve identities against concurrent writes; use existing libraries and add no dependencies. |
 
 For future major changes, add the date, decision, reason, affected capabilities/phases, and any migration implications. Update the relevant sections and Current State together so the blueprint continues to describe both the destination and the actual repository.
