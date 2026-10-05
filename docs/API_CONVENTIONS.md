@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The current executable implements health/readiness and shared routing/recovery errors. It has no business endpoints yet, including at `/api/v1` itself. Input decoding, resource validation, success DTOs, and pagination will be implemented with the first endpoints that need them; this document specifies their contract.
+This is the contract for business endpoints introduced under `/api/v1`. The current executable implements registration, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Registration implements strict input validation and an explicit success DTO; pagination remains a contract for future list endpoints.
 
 ## Routes and responses
 
@@ -48,7 +48,7 @@ Use `httpserver.WriteError` in `internal/platform/http` for public handler error
 | `500` | `internal_error` | Unexpected internal failure, with a fixed safe message. |
 | `503` | `service_unavailable` | A dependency needed for the requested operation is unavailable. |
 
-These mappings are endpoint conventions, not implemented authentication, validation, or rate limiting. `/ready` retains its probe-specific `503` payload. Shared routing currently returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
+These mappings are endpoint conventions; registration implements the applicable input, conflict, throttling, and dependency errors below. Authentication is not implemented. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
 
 HTTP status and header semantics follow [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-15). Responses created by the HTTP server before Gin handles a request, such as malformed HTTP framing, do not necessarily have this envelope or a request ID.
 
@@ -64,6 +64,26 @@ At each business handler boundary:
 Require UTF-8 JSON as defined by [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259.html#section-8.1). Reject duplicate object keys, invalid UTF-8, and property names that do not match the published field names. The [standard decoder](https://pkg.go.dev/encoding/json#Decoder) alone accepts duplicate keys, matches struct names case-insensitively, and replaces invalid UTF-8; account for those behaviors when implementing the input boundary. Do not use maps of floating-point values to decode money. Use explicit string/integer types with checked conversions. Avoid Gin binding methods that write an automatic response; input errors must reach the shared writer with the chosen status and safe fields.
 
 Query handlers must reject malformed percent encoding, unexpected parameters, and duplicate single-valued parameters. Allowlist filtering/sorting fields and values, validate their bounds, and pass only parameterized values to SQL. Never interpolate arbitrary client query text into SQL identifiers or order clauses.
+
+## Registration
+
+`POST /api/v1/auth/register` is public and creates a global identity. It accepts no query string, including an empty `?`, and requires a single `Content-Type: application/json` header, optionally with `charset=utf-8` (case-insensitive). Other media parameters are rejected. Its endpoint-specific body cap is **8 KiB**, including whitespace, enforced for declared-length and chunked bodies.
+
+```json
+{"email":" Owner.Name+Tag@EXAMPLE.COM ","password":"a long private passphrase"}
+```
+
+Only exact `email` and `password` string properties are accepted. Duplicate keys (including equivalent escaped names), unknown keys, nulls/wrong types, invalid UTF-8, unpaired surrogate escapes, non-object input, and trailing non-whitespace produce `400 invalid_request`. Missing/empty fields produce `422 validation_failed` with `required`; email format failures use `invalid_format`, and password length failures use `out_of_range`. Details are ordered email then password and contain no supplied values.
+
+Email normalization trims surrounding whitespace and lowercases ASCII after validation, preserving dots and plus tags. Accepted addresses use an unquoted local part of at most 64 bytes and a DNS domain with at least two labels. Labels contain ASCII letters/digits/hyphens, have 1–63 bytes, and cannot start/end with a hyphen; the full canonical email is at most 254 bytes. Display names, comments, domain literals, Unicode addresses, and provider-specific rewriting are excluded. Syntax validation does not prove mailbox ownership or deliverability.
+
+Passwords have 15–128 Unicode code points, following the length direction in [OWASP's authentication guidance](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html). Preserve every decoded character, including spaces and Unicode; never trim, normalize, truncate, or require particular character classes. Registration hashes with Argon2id v19 using 19 MiB, two passes, one lane, a random 16-byte salt, and a 32-byte key, encoded as `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<key>` with unpadded standard Base64. These costs meet the current [OWASP minimum](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html); benchmark and raise them as deployment resources permit.
+
+Success is `201` with `Cache-Control: no-store` and an explicit `data` object containing `id`, `email`, `created_at`, and `updated_at`. IDs are canonical lowercase UUIDs and timestamps are UTC RFC 3339 instants. No password/verifier, session/token, organization access, or retrieval `Location` is returned. The existing users migration is required; there is no schema change in this increment.
+
+Each API process admits one registration at a time and at most one start per second, after input validation and before hashing. Excess work returns `429 rate_limited` with `Retry-After: 1`. Hashing costs are fixed and cannot be interrupted; cancellation is checked before hashing and persistence. Database writes have a five-second deadline, honor request cancellation, and use parameterized `INSERT ... RETURNING`. Storage failure returns a safe `503 service_unavailable`. PostgreSQL uniqueness handles races across API processes; an existing email returns `409 conflict` with a generic message and leaves all account fields unchanged. Success, failure, and application logs never expose credentials or raw database/parser errors.
+
+Public-launch requirements remain email ownership verification, common/breached password screening, and trusted-ingress limits per client. The current process-wide budget can be exhausted by one client and is independent in each replica. Distinct creation/conflict statuses reveal email availability even though duplicate messages omit the email; address this with indistinguishable responses as part of an ownership-verification flow. Use HTTPS for credential traffic. Login/session endpoints follow in their own increment.
 
 ## Pagination
 

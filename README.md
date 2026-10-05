@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with the first hosted CI run passing. Phase 1 begins with a global user persistence model and migration. Registration, login, organizations, and financial features remain planned.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with hosted CI passing. Phase 1 implements global user persistence and registration. Login, sessions, organizations, and financial features remain planned.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -87,7 +87,17 @@ The first migration creates the `biznes` schema; the second creates `biznes.user
 
 Users are global identities; future memberships will grant access to organizations. [The migration](migrations/00002_create_users.sql) supplies native PostgreSQL UUIDv4 IDs, unique canonical email addresses, an opaque password verifier, and `timestamptz` creation/update defaults. [The Go model](internal/identity/user.go) mirrors these fields and excludes `PasswordHash` from JSON; handlers should still use explicit response types.
 
-Stored emails are lowercase printable ASCII, 3–254 bytes, with one `@` and non-empty local/domain parts. Registration will normalize and fully validate input before insertion; provider-specific dot/plus rewriting is not allowed. Internationalized addresses and phone login remain future choices. Password verifiers must be non-empty printable ASCII, at most 1024 bytes; these storage checks do not establish cryptographic strength. Only trusted server code may write an encoded password hash, never plaintext. Hashing and account creation APIs are not implemented in this increment. Future update statements must maintain `updated_at`; there is no timestamp trigger or automatic schema migration.
+Stored emails are lowercase printable ASCII, 3–254 bytes, with one `@` and non-empty local/domain parts. Registration trims surrounding email whitespace, validates a plain address and DNS domain, normalizes casing, and preserves dots/plus tags. Internationalized addresses and phone login remain future choices. Password verifiers must be non-empty printable ASCII, at most 1024 bytes; these storage checks do not establish cryptographic strength. Registration writes only a server-generated Argon2id verifier. Future update statements must maintain `updated_at`; there is no timestamp trigger or automatic schema migration.
+
+### Registration
+
+`POST /api/v1/auth/register` accepts one JSON object with `email` and `password` string fields. Send `Content-Type: application/json`, optionally with `charset=utf-8`; query parameters are rejected. The body limit is 8 KiB. Unknown/duplicate fields, malformed JSON, invalid UTF-8, lone surrogate escapes, wrong types, and trailing values are rejected. Missing or unacceptable field values use `422` with safe field/code details. See [the endpoint contract](docs/API_CONVENTIONS.md#registration) for examples and error mappings.
+
+Passwords contain 15–128 Unicode code points. Whitespace and Unicode are preserved exactly; there are no composition rules, normalization, or truncation. [OWASP's password storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) informs the Argon2id policy: 19 MiB, two passes, one lane, a fresh random 16-byte salt, and a 32-byte verifier in PHC format. The implementation imports the existing `golang.org/x/crypto v0.48.0` directly without changing dependency versions.
+
+Successful registration returns `201` with `data.id`, canonical `data.email`, and UTC `data.created_at`/`data.updated_at`. It grants no session or organization access. Database uniqueness protects concurrent creation; duplicates return a safe `409` without changing the account. Each API process admits one registration at a time and one start per second, with `429`/`Retry-After: 1` for excess work and a five-second database write deadline. Responses use `Cache-Control: no-store`; passwords, verifiers, and emails are omitted from application logs.
+
+Before public deployment, add email ownership verification, common/breached password screening, and client-aware limits at the trusted ingress. The process-wide limit bounds hashing work but can be exhausted by one caller. The distinct `201`/`409` responses reveal email availability; an ownership-verification flow should provide indistinguishable registration responses. Deploy credential endpoints over HTTPS. Authentication/session handling is the next increment.
 
 ### Configuration
 
@@ -145,6 +155,7 @@ Startup configuration failures always emit an `ERROR` record and exit with code 
 | `GET /health` | `200` with `{"status":"ok"}` | Process liveness; does not check dependencies. |
 | `GET /ready` | `200` with `{"status":"ready"}` | The lifecycle context is active and a bounded PostgreSQL ping succeeds. |
 | `GET /ready` during an outage or shutdown | `503` with `{"status":"not_ready"}` | The database check fails or times out, the request is canceled, or shutdown begins while the handler is active. |
+| `POST /api/v1/auth/register` | `201` with a public user `data` object | Validated identity creation with a securely hashed password; no login/session yet. |
 
 Shutdown closes the listening socket, so new probe connections may fail instead of receiving a response. Liveness remains successful during database outages and for requests served during draining. The readiness ping observes both request cancellation and application shutdown without canceling other in-flight request contexts. Readiness can recover after a database outage without restarting the API; it verifies connectivity, not application schema. Unregistered paths, including `/` and `/api/v1`, return a JSON `404` error. Unsupported methods on registered paths return a JSON `405` error with `Allow`; only `GET` is currently registered for the probes.
 
@@ -152,7 +163,7 @@ Every handled request receives an `X-Request-ID`. A single supplied value is acc
 
 Shared errors use `{"error":{"code":"...","message":"...","request_id":"..."}}`, with optional field/code `details`. They return `application/json` and `Cache-Control: no-store`. Recovery uses the same writer for a safe `500` with code `internal_error` before response commitment; after commitment it aborts without appending a second body or changing the status. Panic details and stack traces are omitted. Trusted proxy headers and automatic trailing-slash redirects are disabled.
 
-The [API conventions](docs/API_CONVENTIONS.md) reserve `/api/v1` for real business routes and define `data`/optional `meta` success envelopes, status/error mappings, bounded JSON input, validation, pagination (default page `1`, limit `20`, caps `10000`/`100`), UTC timestamps, and opaque UUID IDs. Resource decoding and pagination will accompany the first business endpoints; there are no placeholder business endpoints.
+The [API conventions](docs/API_CONVENTIONS.md) define `/api/v1`, `data`/optional `meta` success envelopes, status/error mappings, bounded JSON input, validation, pagination (default page `1`, limit `20`, caps `10000`/`100`), UTC timestamps, and opaque UUID IDs. Registration implements its input and success contract; pagination will accompany the first list endpoint. There are no placeholder endpoints.
 
 ### Git workflow
 
@@ -237,4 +248,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Add registration with bounded input validation, canonical email handling, secure password hashing, and explicit PostgreSQL persistence, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Authentication follows separately.
+Add authentication and session/token lifecycle, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Continue using bounded credential processing and safe responses; organizations and memberships follow in their own increment.

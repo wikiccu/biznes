@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wikiccu/biznes/internal/identity"
 	"github.com/wikiccu/biznes/internal/platform/config"
 )
 
@@ -28,6 +29,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	router.NoMethod(func(c *gin.Context) {
 		WriteError(c, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not supported for this resource.")
 	})
+	router.Group("/api/v1").POST("/auth/register", registration(identity.NewRegistrar(pool)))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
