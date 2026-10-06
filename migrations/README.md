@@ -78,9 +78,15 @@ The API needs contacts SELECT/INSERT/UPDATE in addition to the existing identity
 
 The API needs transaction_categories SELECT/INSERT and UPDATE on name/updated_at, alongside current identity/membership permissions. Writes/lists hold the membership row lock; single reads join membership. Every data query/update includes organization scope. Owner/admin/accountant members can manage these categories; this does not broaden contact/organization write policies. Rollback locks the table and refuses stored rows; empty rollback drops only this table/indexes with `RESTRICT`, retaining prior domain data and migration history. Never remove production categories to force rollback. Apply the migration before deploying category routes. Categories do not store amounts or alter balances.
 
+## Financial accounts
+
+`00007_create_financial_accounts.sql` introduces `biznes.financial_accounts` with a restricted organization FK, native UUID defaults, a composite `(organization_id, id)` primary key, name/kind/currency, and creation/update timestamps. Names have 1–120 character/control constraints; kind is `cash` or `bank`, and explicit currency must be `IRR`. The named unique constraint on `(organization_id, name)` uses exact `C` collation across both kinds and protects creation/rename races. A tenant/creation-time/ID index supports stable listing. Application validation trims Unicode names; the API keeps kind/currency fixed after creation. These are financial metadata records without amounts or balances; future transactions must reference the composite tenant/account key.
+
+The API needs financial_accounts SELECT/INSERT and UPDATE on name/updated_at, alongside existing identity/membership permissions. Writes/lists lock current membership; single reads join it. Every query/update includes organization scope. Owner/admin/accountant members can manage accounts; all members can read. Rollback takes an `ACCESS EXCLUSIVE` table lock and refuses any stored rows; empty rollback drops only accounts/indexes with `RESTRICT`, preserving all prior domain data and history. Never remove production accounts to force rollback. Apply the migration explicitly before deploying account routes. Additional currencies require a later migration and explicit unit/scale semantics.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00007_create_financial_accounts.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00008_create_transactions.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

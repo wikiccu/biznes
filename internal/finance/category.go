@@ -34,17 +34,27 @@ type Service struct{ pool *pgxpool.Pool }
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
 
+func validateName(name string) (string, string) {
+	invalid := !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl)
+	name = strings.TrimSpace(name)
+	switch {
+	case invalid:
+		return "", "invalid_format"
+	case name == "":
+		return "", "required"
+	case utf8.RuneCountInString(name) > 120:
+		return "", "out_of_range"
+	default:
+		return name, ""
+	}
+}
+
 func validateCategory(input CategoryInput, create bool) (CategoryInput, error) {
 	var fields []FieldError
-	invalidName := !utf8.ValidString(input.Name) || strings.ContainsFunc(input.Name, unicode.IsControl)
-	input.Name = strings.TrimSpace(input.Name)
-	switch {
-	case invalidName:
-		fields = append(fields, FieldError{"name", "invalid_format"})
-	case input.Name == "":
-		fields = append(fields, FieldError{"name", "required"})
-	case utf8.RuneCountInString(input.Name) > 120:
-		fields = append(fields, FieldError{"name", "out_of_range"})
+	var code string
+	input.Name, code = validateName(input.Name)
+	if code != "" {
+		fields = append(fields, FieldError{"name", code})
 	}
 	if create {
 		if input.Kind == "" {

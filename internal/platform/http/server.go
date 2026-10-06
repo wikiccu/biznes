@@ -57,6 +57,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	categories.GET("", listCategories(financeService))
 	categories.GET("/:category_id", emptyAuthRequest, getCategory(financeService))
 	categories.PATCH("/:category_id", saveCategory(financeService, true))
+	accounts := organizations.Group("/:organization_id/financial-accounts")
+	accounts.POST("", saveAccount(financeService, false))
+	accounts.GET("", listAccounts(financeService))
+	accounts.GET("/:account_id", emptyAuthRequest, getAccount(financeService))
+	accounts.PATCH("/:account_id", saveAccount(financeService, true))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

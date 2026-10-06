@@ -122,6 +122,8 @@ func writeFinanceError(c *gin.Context, err error) {
 		WriteError(c, http.StatusUnprocessableEntity, "validation_failed", "Please correct the highlighted fields.", details...)
 	case errors.Is(err, finance.ErrCategoryConflict):
 		WriteError(c, http.StatusConflict, "conflict", "A category with this name and kind already exists.")
+	case errors.Is(err, finance.ErrAccountConflict):
+		WriteError(c, http.StatusConflict, "conflict", "An account with this name already exists.")
 	case errors.Is(err, finance.ErrUnavailable):
 		WriteError(c, http.StatusServiceUnavailable, "service_unavailable", "Finance service is temporarily unavailable.")
 	default:
