@@ -2,11 +2,8 @@ package httpserver
 
 import (
 	"errors"
-	"io"
 	"net/http"
-	"net/url"
 	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -47,10 +44,14 @@ func createOrganization(service *organization.Service) gin.HandlerFunc {
 var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func organizationID(c *gin.Context) (string, bool) {
-	id := c.Param("organization_id")
+	return resourceID(c, "organization_id")
+}
+
+func resourceID(c *gin.Context, field string) (string, bool) {
+	id := c.Param(field)
 	if !canonicalUUID.MatchString(id) {
-		WriteError(c, http.StatusBadRequest, "invalid_request", "Provide a canonical organization ID.",
-			ErrorDetail{Field: "organization_id", Code: "invalid_format"})
+		WriteError(c, http.StatusBadRequest, "invalid_request", "Provide a canonical resource ID.",
+			ErrorDetail{Field: field, Code: "invalid_format"})
 		return "", false
 	}
 	return id, true
@@ -96,7 +97,7 @@ func renameOrganization(service *organization.Service) gin.HandlerFunc {
 
 func listOrganizations(service *organization.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		page, limit, ok := organizationPagination(c)
+		page, limit, ok := paginationInput(c)
 		if !ok {
 			return
 		}
@@ -113,63 +114,6 @@ func listOrganizations(service *organization.Service) gin.HandlerFunc {
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"page": page, "limit": limit}})
 	}
-}
-
-func organizationPagination(c *gin.Context) (int, int, bool) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 0)
-	if _, err := io.ReadAll(c.Request.Body); err != nil {
-		WriteError(c, http.StatusBadRequest, "invalid_request", "This endpoint requires an empty request body.")
-		return 0, 0, false
-	}
-	query, err := url.ParseQuery(c.Request.URL.RawQuery)
-	if err != nil || c.Request.URL.ForceQuery {
-		WriteError(c, http.StatusBadRequest, "invalid_request", "Provide valid pagination parameters.")
-		return 0, 0, false
-	}
-	for key := range query {
-		if key != "page" && key != "limit" {
-			WriteError(c, http.StatusBadRequest, "invalid_request", "Only page and limit query parameters are accepted.")
-			return 0, 0, false
-		}
-	}
-	page, limit := 1, 20
-	for _, field := range []struct {
-		name  string
-		value *int
-	}{{"page", &page}, {"limit", &limit}} {
-		values, present := query[field.name]
-		if !present {
-			continue
-		}
-		if len(values) != 1 || values[0] == "" {
-			WriteError(c, http.StatusBadRequest, "invalid_request", "Provide one decimal value per pagination parameter.")
-			return 0, 0, false
-		}
-		for _, char := range values[0] {
-			if char < '0' || char > '9' {
-				WriteError(c, http.StatusBadRequest, "invalid_request", "Pagination parameters require ASCII decimal digits.")
-				return 0, 0, false
-			}
-		}
-		value, err := strconv.Atoi(values[0])
-		if err != nil {
-			WriteError(c, http.StatusBadRequest, "invalid_request", "Pagination parameters are too large.")
-			return 0, 0, false
-		}
-		*field.value = value
-	}
-	var details []ErrorDetail
-	if page < 1 || page > 10000 {
-		details = append(details, ErrorDetail{Field: "page", Code: "out_of_range"})
-	}
-	if limit < 1 || limit > 100 {
-		details = append(details, ErrorDetail{Field: "limit", Code: "out_of_range"})
-	}
-	if len(details) != 0 {
-		WriteError(c, http.StatusUnprocessableEntity, "validation_failed", "Please correct the highlighted fields.", details...)
-		return 0, 0, false
-	}
-	return page, limit, true
 }
 
 func writeOrganizationError(c *gin.Context, err error) {

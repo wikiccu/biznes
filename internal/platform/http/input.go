@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -108,4 +109,61 @@ func validUnicodeEscapes(body []byte) bool {
 		}
 	}
 	return true
+}
+
+func paginationInput(c *gin.Context) (int, int, bool) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 0)
+	if _, err := io.ReadAll(c.Request.Body); err != nil {
+		WriteError(c, http.StatusBadRequest, "invalid_request", "This endpoint requires an empty request body.")
+		return 0, 0, false
+	}
+	query, err := url.ParseQuery(c.Request.URL.RawQuery)
+	if err != nil || c.Request.URL.ForceQuery {
+		WriteError(c, http.StatusBadRequest, "invalid_request", "Provide valid pagination parameters.")
+		return 0, 0, false
+	}
+	for key := range query {
+		if key != "page" && key != "limit" {
+			WriteError(c, http.StatusBadRequest, "invalid_request", "Only page and limit query parameters are accepted.")
+			return 0, 0, false
+		}
+	}
+	page, limit := 1, 20
+	for _, field := range []struct {
+		name  string
+		value *int
+	}{{"page", &page}, {"limit", &limit}} {
+		values, present := query[field.name]
+		if !present {
+			continue
+		}
+		if len(values) != 1 || values[0] == "" {
+			WriteError(c, http.StatusBadRequest, "invalid_request", "Provide one decimal value per pagination parameter.")
+			return 0, 0, false
+		}
+		for _, char := range values[0] {
+			if char < '0' || char > '9' {
+				WriteError(c, http.StatusBadRequest, "invalid_request", "Pagination parameters require ASCII decimal digits.")
+				return 0, 0, false
+			}
+		}
+		value, err := strconv.Atoi(values[0])
+		if err != nil {
+			WriteError(c, http.StatusBadRequest, "invalid_request", "Pagination parameters are too large.")
+			return 0, 0, false
+		}
+		*field.value = value
+	}
+	var details []ErrorDetail
+	if page < 1 || page > 10000 {
+		details = append(details, ErrorDetail{Field: "page", Code: "out_of_range"})
+	}
+	if limit < 1 || limit > 100 {
+		details = append(details, ErrorDetail{Field: "limit", Code: "out_of_range"})
+	}
+	if len(details) != 0 {
+		WriteError(c, http.StatusUnprocessableEntity, "validation_failed", "Please correct the highlighted fields.", details...)
+		return 0, 0, false
+	}
+	return page, limit, true
 }

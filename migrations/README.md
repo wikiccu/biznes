@@ -66,9 +66,15 @@ The concrete organization service creates an organization and its initial owner 
 
 Rollback locks both tables and refuses removal if either contains rows. An empty rollback drops memberships before organizations with `RESTRICT`, preserving users and sessions. Failure leaves schema, data, and Goose history intact. Never delete production business data to force rollback. Apply the migration before deploying the organization routes.
 
+## Contacts
+
+`00005_create_contacts.sql` creates `biznes.contacts`, with a required organization reference (`ON DELETE RESTRICT`) and native UUID defaults under a composite `(organization_id, id)` primary key. This preserves tenant scope in the resource key and later references. Required names, customer/supplier/both classification, optional email/phone/notes (non-null strings defaulting to empty), and creation/update timestamps are explicit columns. Check constraints enforce field bounds and allowed control characters; application logic additionally trims/validates names and mailbox syntax. The `(organization_id, created_at, id)` index supports stable contact-list ordering.
+
+The API needs contacts SELECT/INSERT/UPDATE in addition to the existing identity/organization permissions. Mutations and lists lock current membership in their transaction; single reads join it. Every data query/update includes the organization ID, and payloads cannot replace it. Rollback takes an `ACCESS EXCLUSIVE` table lock and refuses populated storage; empty rollback drops only contacts with `RESTRICT`, retaining users, sessions, organizations, memberships, and their migration history. Never remove production contacts to force rollback. Apply this migration before deploying contact routes.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00005_create_contacts.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00006_create_transaction_categories.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

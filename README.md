@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with hosted foundation CI passing. Phase 1 implements global identity, persistent bearer sessions, organization creation with owner membership, and membership-scoped organization reads and renaming. Contacts and financial features remain planned. Hosted validation status for subsequent commits is available in GitHub Actions.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations with membership/role authorization, and tenant-scoped contact creation, listing, retrieval, and replacement. Financial features remain planned. Hosted validation status is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,7 +81,7 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The first migration creates the `biznes` schema, the second creates `biznes.users`, the third creates `biznes.sessions`, and the fourth creates `biznes.organizations` and `biznes.memberships`. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, and organization-owned contacts. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### User persistence
 
@@ -123,6 +123,12 @@ Apply [migration 00004](migrations/00004_create_organizations.sql) before using 
 | `PATCH /api/v1/organizations/:organization_id` | Rename an organization when the caller is an owner or administrator. |
 
 Create/rename accept a strict UTF-8 JSON object with only a `name` string, capped at 8 KiB. Names are trimmed, contain 1–120 Unicode code points, and reject control characters; Persian and zero-width non-joiners are preserved. Responses contain `id`, `name`, the caller's `role`, and UTC timestamps. Names need not be unique. Every lookup checks database membership using the authenticated user; client user IDs, roles, and tenant headers cannot grant access. Outsiders receive the same `404` as an unknown organization, while accountant/staff members receive `403` when renaming. Rename holds the membership row through commit to serialize concurrent role changes/removal. There are no invitations, membership-management routes, ownership transfer, or deletion yet. See [the full contract](docs/API_CONVENTIONS.md#organizations).
+
+### Contacts
+
+Apply [migration 00005](migrations/00005_create_contacts.sql) before using `/api/v1/organizations/:organization_id/contacts`. `POST` creates a contact; `GET` lists that organization's contacts with `page`/`limit`; `GET /:contact_id` retrieves one; `PUT /:contact_id` replaces its editable fields. All require a bearer session and current organization membership. All members can read; owner/admin members can create or replace. Both organization and contact IDs scope every lookup/write.
+
+Send a strict JSON object with required `name` and `kind` (`customer`, `supplier`, or `both`), and optional `email`, `phone`, and `notes` strings. Names support Persian and contain 1–120 code points. Phone numbers are recorded as free-form text up to 64 code points; email uses plain mailbox syntax up to 254 UTF-8 bytes, with case preserved. Multiline notes allow up to 2000 code points. The body cap is 8 KiB. `PUT` requires name/kind and clears omitted optional fields. Names need not be unique. There is no deletion, contact search/filter, tags, activity history, or financial balance yet. See [the endpoint contract](docs/API_CONVENTIONS.md#contacts) for validation, permissions, and concurrency behavior.
 
 ### Configuration
 
@@ -276,4 +282,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Add membership-scoped contact management, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Reuse authenticated identity and enforce organization membership in every contact query and write.
+Begin the financial persistence foundation and transaction categories in small increments, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Preserve tenant scope, use exact IRR amounts, and define deterministic transaction/balance semantics before recording financial activity.

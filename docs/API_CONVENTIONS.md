@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization routes with pagination, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact routes with pagination, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -48,7 +48,7 @@ Use `httpserver.WriteError` in `internal/platform/http` for public handler error
 | `500` | `internal_error` | Unexpected internal failure, with a fixed safe message. |
 | `503` | `service_unavailable` | A dependency needed for the requested operation is unavailable. |
 
-Identity and organization endpoints implement the applicable errors below, including membership/role enforcement. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
+Identity, organization, and contact endpoints implement the applicable errors below, including membership/role enforcement. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
 
 HTTP status and header semantics follow [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-15). Responses created by the HTTP server before Gin handles a request, such as malformed HTTP framing, do not necessarily have this envelope or a request ID.
 
@@ -112,7 +112,7 @@ All four routes require the existing bearer session before body/query/path valid
 | `GET /api/v1/organizations/:organization_id` | Member of the selected organization. | `200`, `data` organization. |
 | `PATCH /api/v1/organizations/:organization_id` | Owner or administrator of the selected organization. | `200`, renamed `data` organization. |
 
-The explicit organization DTO contains only `id`, `name`, `role`, `created_at`, and `updated_at`. `role` is the caller's membership (`owner`, `admin`, `accountant`, or `staff`), not an organization-wide setting or another user's role. Timestamps are UTC instants; successful responses use `Cache-Control: no-store`. All roles can read organization metadata. Only owner/admin can rename; future contact/financial permissions need their own operation policies.
+The explicit organization DTO contains only `id`, `name`, `role`, `created_at`, and `updated_at`. `role` is the caller's membership (`owner`, `admin`, `accountant`, or `staff`), not an organization-wide setting or another user's role. Timestamps are UTC instants; successful responses use `Cache-Control: no-store`. All roles can read organization metadata. Only owner/admin can rename; contact permissions are defined below; financial permissions need their own operation policies.
 
 Create/rename share the identity endpoints' strict 8 KiB JSON boundary through `internal/platform/http/input.go`, accepting only a `name` string. Unknown/duplicate/case-variant fields, nulls, wrong types, malformed/trailing JSON, invalid UTF-8, and lone surrogate escapes return `400`. Missing/blank names return `422` with `name: required`; over 120 Unicode code points uses `out_of_range`; control characters use `invalid_format`. Control checks precede trimming, so tabs/newlines are rejected even at the edges. Unicode surrounding whitespace is trimmed; internal whitespace, Persian, combining characters, emoji, and zero-width non-joiners are preserved without normalization. Names need not be unique. Query strings are rejected on create/get/rename. GET requests require an empty body. Path IDs require canonical lowercase hyphenated UUID syntax (`400` otherwise).
 
@@ -120,7 +120,38 @@ Creation inserts the organization and initial owner membership in one transactio
 
 Single-resource reads join membership in the query. Unknown resources and resources outside the caller's memberships return the same safe `404 not_found`. A member with accountant/staff role receives `403 forbidden` for a valid rename. Rename checks and locks the membership row with `FOR SHARE` until its organization update commits, serializing concurrent removal/demotion; the update maintains `updated_at` and preserves `created_at`. Each service operation has a five-second/request-cancellation database deadline and returns a safe `503 service_unavailable` on storage failure. Membership is never cached in the bearer session. Requests already authorized may finish before a later revocation completes.
 
-Apply `00004_create_organizations.sql` explicitly before deploying these routes. There are no invitations, member-management endpoints, ownership transfer, deletion, branch policies, or financial/contact routes yet. Creation grants only the creator's owner membership. No dependency or environment setting is added.
+Apply `00004_create_organizations.sql` explicitly before deploying these routes. There are no invitations, member-management endpoints, ownership transfer, organization deletion, branch policies, or financial routes yet. Creation grants only the creator's owner membership. Contacts use the separate migration and endpoints below. No dependency or environment setting is added.
+
+## Contacts
+
+All routes are beneath `/api/v1/organizations/:organization_id/contacts` and authenticate the bearer session before input validation. Both path IDs require canonical lowercase hyphenated UUID syntax. The organization is selected by the path and authorized from database membership using the authenticated user. Client body/query/header user, tenant, or role claims cannot grant access or move a contact.
+
+| Route suffix | Access | Success |
+| --- | --- | --- |
+| `POST` collection | Owner/admin membership. | `201`, `data` contact, retrieval `Location`. |
+| `GET` collection | Any membership. | `200`, `data` array and `meta.page`/`meta.limit`. |
+| `GET /:contact_id` | Any membership. | `200`, `data` contact. |
+| `PUT /:contact_id` | Owner/admin membership. | `200`, replaced `data` contact. |
+
+The DTO contains only `id`, `organization_id`, `name`, `kind`, `email`, `phone`, `notes`, `created_at`, and `updated_at`. Optional text fields are strings, defaulting to `""`; timestamps are UTC instants, and all responses use `Cache-Control: no-store`. Names are not unique. A contact belongs to one organization and can be a customer, supplier, or both; these classifications are separate from a user's business role.
+
+POST/PUT accept the shared strict UTF-8 JSON contract and 8 KiB body cap. Only the five editable string fields below are accepted. Missing `name`/`kind` yields `422 required`; nulls, wrong types, unknown/duplicate/case-variant keys, malformed/trailing JSON, invalid UTF-8, and lone surrogate escapes yield `400`. Query strings are rejected. Validation details appear in deterministic order: name, email, phone, notes, kind. Value-length failures use `out_of_range`; syntax/control failures use `invalid_format`.
+
+| Field | Application validation |
+| --- | --- |
+| `name` | Required, trimmed Unicode whitespace, 1–120 code points, no control characters. |
+| `kind` | Required exact `customer`, `supplier`, or `both`; no trimming/case conversion. |
+| `email` | Optional; trim whitespace, at most 254 UTF-8 bytes, plain single mailbox parsed by Go `net/mail`, without a display name/comment/address rewriting. Preserve case and supported Unicode. This records contact data without verifying mailbox ownership or deliverability; identity login email policy remains separate. |
+| `phone` | Optional free-form text; trim whitespace, at most 64 code points, no control characters. Preserve Persian digits and punctuation; no country-specific normalization or phone verification. |
+| `notes` | Optional; preserve exact text, at most 2000 code points; allow LF/CR/tab, reject other control characters. |
+
+Control checks precede trimming. Persian, combining marks, emoji, and zero-width non-joiners are preserved without normalization. PUT replaces all editable fields: name/kind remain required, and omitted email/phone/notes become empty strings. The tenant and resource ID cannot be changed. It preserves creation time and updates `updated_at`; concurrent authorized replacements use last committed values, without optimistic concurrency/version tokens. Creation is not idempotent; retries after ambiguous success can duplicate contacts.
+
+Collection GET accepts only the shared bounded page/limit contract and requires an empty body. Results use `created_at ASC, id ASC` within the selected organization, with no count query; valid empty/beyond-end pages return `[]`. Listing first locks current membership in its transaction, so an inaccessible organization receives `404`, rather than an apparent empty list. Single GET requires no query/body and joins membership with both organization/contact predicates. Unknown or inaccessible resources share a safe `404 not_found`. Owner/admin writes also constrain both IDs; a contact from another organization cannot be accessed even if the caller belongs to both organizations. Read-only members receive `403 forbidden` for writes before contact lookup.
+
+Contact writes and lists reuse `organization.LockMembership` (`FOR SHARE`) and hold it until commit, serializing concurrent membership removal/demotion. GET uses a membership join in its own statement. Every operation has a five-second/request-cancellation database deadline and fails closed on storage errors with safe `503` responses. Membership is never cached in a session; already authorized operations may finish before a later revocation completes. Contact content and raw storage/parser errors are omitted from application logs.
+
+Apply `00005_create_contacts.sql` explicitly before deployment. The composite primary key is `(organization_id, id)`; organization IDs participate in every reference/lookup. There are no contact deletion/archive/search/filter/tag/history or financial/balance endpoints yet, and no new dependency/configuration setting.
 
 ## Pagination
 

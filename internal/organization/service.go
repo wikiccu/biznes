@@ -135,14 +135,9 @@ func (s *Service) Rename(ctx context.Context, userID, organizationID, name strin
 	}
 	defer tx.Rollback(ctx)
 	var org Organization
-	// Hold the membership through commit so concurrent revocation/demotion cannot race this write.
-	err = tx.QueryRow(ctx, `SELECT role FROM biznes.memberships
-		WHERE organization_id = $1 AND user_id = $2 FOR SHARE`, organizationID, userID).Scan(&org.Role)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Organization{}, ErrNotFound
-	}
+	org.Role, err = LockMembership(ctx, tx, userID, organizationID)
 	if err != nil {
-		return Organization{}, ErrUnavailable
+		return Organization{}, err
 	}
 	if org.Role != "owner" && org.Role != "admin" {
 		return Organization{}, ErrForbidden
@@ -154,4 +149,18 @@ func (s *Service) Rename(ctx context.Context, userID, organizationID, name strin
 		return Organization{}, ErrUnavailable
 	}
 	return org, nil
+}
+
+// LockMembership checks current tenant access and holds it until the caller's transaction ends.
+func LockMembership(ctx context.Context, tx pgx.Tx, userID, organizationID string) (string, error) {
+	var role string
+	err := tx.QueryRow(ctx, `SELECT role FROM biznes.memberships
+		WHERE organization_id = $1 AND user_id = $2 FOR SHARE`, organizationID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	return role, nil
 }
