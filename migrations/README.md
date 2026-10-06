@@ -92,11 +92,21 @@ The migration adds unique reference keys `(organization_id, id, currency)` on ac
 
 The API needs transactions SELECT/INSERT, accounts/categories SELECT, and current identity/membership permissions (including membership locking). Do not grant transaction UPDATE/DELETE to the API role: current records are immutable through application routes. Native INSERT/ON CONFLICT and a fresh statement in the transaction enforce retry identity across replicas; an identical payload returns the stored record, while changed input with its key returns `409`. Direction/currency are selected from authorized organization-owned resources and provenance comes from authentication. There is no trigger, schema auto-sync, correction worker, or dependency/configuration setting.
 
-Rollback locks transactions and refuses any stored records. An empty rollback drops only transactions/indexes and the two new reference constraints with `RESTRICT`, retaining all prior domain data and migration history. These operations and version recording are transactional; dependencies or failures leave the schema/history intact. Never delete production financial records to force rollback. Use explicit corrective migrations and future linked reversal records for financial corrections.
+Rollback locks transactions and refuses any stored records. An empty rollback drops only transactions/indexes and the two new reference constraints with `RESTRICT`, retaining all prior domain data and migration history. These operations and version recording are transactional; dependencies or failures leave the schema/history intact. Never delete production financial records to force rollback. Use explicit corrective migrations and linked reversal records below for financial corrections.
+
+## Transaction reversals
+
+`00009_create_transaction_reversals.sql` creates `biznes.transaction_reversals` with native IDs, composite tenant/resource keys, a required original transaction reference, required UUID idempotency key, bounded non-empty/control-free reason, authenticated creator reference, and database-default creation time. A composite restricted FK to `transactions(organization_id, id)` prevents cross-tenant links and deletion/rekeying of referenced originals. The restricted creator FK and its index preserve provenance. The table stores no amount or duplicate financial classification and never rewrites the original record.
+
+Unique `(organization_id, transaction_id)` permits only one full reversal; unique `(organization_id, idempotency_key)` protects retry identity across replicas. Both constraints are native and the application reads a committed winner in a fresh statement after INSERT/ON CONFLICT. Identical target/key/trimmed-reason input returns that reversal; changed input or a second key conflicts. Recording and reversal keys have independent operation namespaces. Existing transaction rows remain intact when applying this migration; current corrected recognition excludes originals with a linked full reversal.
+
+The API needs transaction_reversals SELECT/INSERT, transactions SELECT, and existing identity/membership permissions for authentication/locking. Do not grant reversal UPDATE/DELETE or original transaction UPDATE/DELETE to the API role. Reversal creation does not need mutation permission on the original; it inserts a linked record and holds membership through commit. No triggers, new dependency/configuration, balance cache, or financial amount arithmetic are introduced.
+
+Rollback locks reversals and refuses populated storage. Empty rollback drops only reversals/indexes with `RESTRICT`, preserving original transactions, every prior domain's data, and migration history. No prior migration is modified. Never delete production reversal/original records to make rollback succeed; use a deliberate corrective migration.
 
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00009_create_transaction_reversals.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00010_create_account_activity.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

@@ -66,6 +66,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	transactions.POST("", recordTransaction(financeService))
 	transactions.GET("", listTransactions(financeService))
 	transactions.GET("/:transaction_id", emptyAuthRequest, getTransaction(financeService))
+	transactions.POST("/:transaction_id/reversal", reverseTransaction(financeService))
+	transactions.GET("/:transaction_id/reversal", emptyAuthRequest, getReversal(financeService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
