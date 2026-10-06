@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wikiccu/biznes/internal/identity"
+	"github.com/wikiccu/biznes/internal/organization"
 	"github.com/wikiccu/biznes/internal/platform/config"
 )
 
@@ -36,6 +37,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	protected := auth.Group("", emptyAuthRequest, sessionAuthentication(identityService))
 	protected.GET("/me", currentUser)
 	protected.POST("/logout", logout(identityService))
+	organizationService := organization.NewService(pool)
+	organizations := router.Group("/api/v1/organizations", sessionAuthentication(identityService))
+	organizations.POST("", createOrganization(organizationService))
+	organizations.GET("", listOrganizations(organizationService))
+	organizations.GET("/:organization_id", emptyAuthRequest, getOrganization(organizationService))
+	organizations.PATCH("/:organization_id", renameOrganization(organizationService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

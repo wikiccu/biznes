@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with hosted foundation CI passing. Phase 1 implements global user persistence, registration, login, and persistent bearer sessions. Organizations and financial features remain planned. Hosted validation status for subsequent commits is available in GitHub Actions.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's application/database foundation, developer commands, API conventions, and Go CI are implemented, with hosted foundation CI passing. Phase 1 implements global identity, persistent bearer sessions, organization creation with owner membership, and membership-scoped organization reads and renaming. Contacts and financial features remain planned. Hosted validation status for subsequent commits is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,11 +81,11 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The first migration creates the `biznes` schema, the second creates `biznes.users`, and the third creates `biznes.sessions`. Goose tracks versions in `public.goose_db_version`. The schema rollback refuses to drop a non-empty schema; users/session rollbacks lock their tables and refuse to remove stored rows. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The first migration creates the `biznes` schema, the second creates `biznes.users`, the third creates `biznes.sessions`, and the fourth creates `biznes.organizations` and `biznes.memberships`. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### User persistence
 
-Users are global identities; future memberships will grant access to organizations. [The migration](migrations/00002_create_users.sql) supplies native PostgreSQL UUIDv4 IDs, unique canonical email addresses, an opaque password verifier, and `timestamptz` creation/update defaults. [The Go model](internal/identity/user.go) mirrors these fields and excludes `PasswordHash` from JSON; handlers should still use explicit response types.
+Users are global identities; memberships grant access to organizations. [The migration](migrations/00002_create_users.sql) supplies native PostgreSQL UUIDv4 IDs, unique canonical email addresses, an opaque password verifier, and `timestamptz` creation/update defaults. [The Go model](internal/identity/user.go) mirrors these fields and excludes `PasswordHash` from JSON; handlers should still use explicit response types.
 
 Stored emails are lowercase printable ASCII, 3–254 bytes, with one `@` and non-empty local/domain parts. Registration trims surrounding email whitespace, validates a plain address and DNS domain, normalizes casing, and preserves dots/plus tags. Internationalized addresses and phone login remain future choices. Password verifiers must be non-empty printable ASCII, at most 1024 bytes; these storage checks do not establish cryptographic strength. Registration writes only a server-generated Argon2id verifier. Future update statements must maintain `updated_at`; there is no timestamp trigger or automatic schema migration.
 
@@ -110,6 +110,19 @@ Send the token in one `Authorization: Bearer <token>` header to `GET /api/v1/aut
 Session checks use PostgreSQL on every authorized request, refresh idle activity without extending the absolute expiry, and fail with safe `503` errors when storage is unavailable. Sessions and revocation are shared across API processes and survive API restarts. Requests already authenticated may finish after logout. Expiry requires a new login; there is no refresh endpoint. Tokens, passwords, verifiers, and credential input are omitted from application logs, and credential responses use `Cache-Control: no-store`.
 
 Expired rows remain unusable and can be removed through explicit [session maintenance](migrations/README.md#sessions); schedule this maintenance in deployments to bound table growth. Recovery, MFA, device/session management, and stronger policies for sensitive financial operations remain future work. This increment adds no environment settings, signing keys, or dependencies.
+
+### Organizations
+
+Apply [migration 00004](migrations/00004_create_organizations.sql) before using these authenticated routes:
+
+| Route | Behavior |
+| --- | --- |
+| `POST /api/v1/organizations` | Create an organization and the caller's owner membership atomically; return `201` and its retrieval `Location`. |
+| `GET /api/v1/organizations` | List only the caller's memberships, using bounded `page`/`limit` pagination. |
+| `GET /api/v1/organizations/:organization_id` | Read an organization only when the caller is a member. |
+| `PATCH /api/v1/organizations/:organization_id` | Rename an organization when the caller is an owner or administrator. |
+
+Create/rename accept a strict UTF-8 JSON object with only a `name` string, capped at 8 KiB. Names are trimmed, contain 1–120 Unicode code points, and reject control characters; Persian and zero-width non-joiners are preserved. Responses contain `id`, `name`, the caller's `role`, and UTC timestamps. Names need not be unique. Every lookup checks database membership using the authenticated user; client user IDs, roles, and tenant headers cannot grant access. Outsiders receive the same `404` as an unknown organization, while accountant/staff members receive `403` when renaming. Rename holds the membership row through commit to serialize concurrent role changes/removal. There are no invitations, membership-management routes, ownership transfer, or deletion yet. See [the full contract](docs/API_CONVENTIONS.md#organizations).
 
 ### Configuration
 
@@ -263,4 +276,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Add organizations, memberships, and baseline tenant/permission enforcement, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Global identity authentication must remain separate from authorization to business-owned records.
+Add membership-scoped contact management, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Reuse authenticated identity and enforce organization membership in every contact query and write.

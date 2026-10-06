@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The current executable implements registration, login, current-user/logout routes, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Identity endpoints implement strict input validation and explicit success DTOs; pagination remains a contract for future list endpoints.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization routes with pagination, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -12,7 +12,7 @@ Business successes return `application/json` with a `data` member. For a single 
 {"data": [], "meta": {"page": 1, "limit": 20}}
 ```
 
-This illustrates a future list response, not a registered endpoint. Use `200` for retrieval/update results and `201` for creation, with `Location` when the new resource has a retrieval URL. A `204` response has no JSON body. Successful responses must not contain an `error` member.
+The organization list implements this envelope. Use `200` for retrieval/update results and `201` for creation, with `Location` when the new resource has a retrieval URL. A `204` response has no JSON body. Successful responses must not contain an `error` member.
 
 `GET /health` and `GET /ready` remain outside the business API prefix and keep their small `status` responses. Readiness checks database connectivity, not schema or authorization. Every request handled by Gin receives `X-Request-ID`; a supplied ID is accepted only under the bounded existing middleware rules. Do not duplicate it in successful business DTOs.
 
@@ -48,7 +48,7 @@ Use `httpserver.WriteError` in `internal/platform/http` for public handler error
 | `500` | `internal_error` | Unexpected internal failure, with a fixed safe message. |
 | `503` | `service_unavailable` | A dependency needed for the requested operation is unavailable. |
 
-These mappings are endpoint conventions; identity endpoints implement the applicable input, authentication, conflict, throttling, and dependency errors below. Organization authorization is not implemented. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
+Identity and organization endpoints implement the applicable errors below, including membership/role enforcement. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
 
 HTTP status and header semantics follow [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-15). Responses created by the HTTP server before Gin handles a request, such as malformed HTTP framing, do not necessarily have this envelope or a request ID.
 
@@ -99,7 +99,28 @@ Missing credentials return `401 unauthenticated` with `WWW-Authenticate: Bearer 
 
 Sessions have an **eight-hour absolute lifetime** and a **fifteen-minute idle timeout**, enforced by PostgreSQL time on every lookup. A valid lookup atomically refreshes `last_seen_at` without extending `expires_at`. Expired sessions cannot be revived. These initial policies are informed by [OWASP session guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html); revisit them with stronger authentication and risk controls before sensitive financial operations. Authentication queries and revocation have five-second/request-cancellation deadlines and fail closed with safe `503 service_unavailable` errors on storage failure. Sessions survive API restarts and are shared by replicas using the same database.
 
-Apply `00003_create_sessions.sql` explicitly before deploying these routes. Expiry requires login again; no refresh, recovery, MFA, device/session management, or organization authorization is implemented. Expired records remain unusable and require explicit [maintenance](../migrations/README.md#sessions) to bound growth; there is no background cleanup worker. No signing key, environment setting, or dependency is introduced.
+Apply `00003_create_sessions.sql` explicitly before deploying these routes. Expiry requires login again; no refresh, recovery, MFA, or device/session management is implemented. Organization authorization is checked separately through membership. Expired records remain unusable and require explicit [maintenance](../migrations/README.md#sessions) to bound growth; there is no background cleanup worker. No signing key, environment setting, or dependency is introduced.
+
+## Organizations
+
+All four routes require the existing bearer session before body/query/path validation. Identity comes exclusively from the authenticated context. The organization ID in a path selects a candidate resource; database membership authorizes it. User/role/tenant headers or body/query claims are never authorization inputs. This follows [OWASP's per-request authorization guidance](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html#validate-the-permissions-on-every-request).
+
+| Route | Access | Success |
+| --- | --- | --- |
+| `POST /api/v1/organizations` | Any authenticated user. | `201`, `Location: /api/v1/organizations/<id>`, `data` organization. |
+| `GET /api/v1/organizations` | The caller's memberships only. | `200`, `data` array and `meta.page`/`meta.limit`. |
+| `GET /api/v1/organizations/:organization_id` | Member of the selected organization. | `200`, `data` organization. |
+| `PATCH /api/v1/organizations/:organization_id` | Owner or administrator of the selected organization. | `200`, renamed `data` organization. |
+
+The explicit organization DTO contains only `id`, `name`, `role`, `created_at`, and `updated_at`. `role` is the caller's membership (`owner`, `admin`, `accountant`, or `staff`), not an organization-wide setting or another user's role. Timestamps are UTC instants; successful responses use `Cache-Control: no-store`. All roles can read organization metadata. Only owner/admin can rename; future contact/financial permissions need their own operation policies.
+
+Create/rename share the identity endpoints' strict 8 KiB JSON boundary through `internal/platform/http/input.go`, accepting only a `name` string. Unknown/duplicate/case-variant fields, nulls, wrong types, malformed/trailing JSON, invalid UTF-8, and lone surrogate escapes return `400`. Missing/blank names return `422` with `name: required`; over 120 Unicode code points uses `out_of_range`; control characters use `invalid_format`. Control checks precede trimming, so tabs/newlines are rejected even at the edges. Unicode surrounding whitespace is trimmed; internal whitespace, Persian, combining characters, emoji, and zero-width non-joiners are preserved without normalization. Names need not be unique. Query strings are rejected on create/get/rename. GET requests require an empty body. Path IDs require canonical lowercase hyphenated UUID syntax (`400` otherwise).
+
+Creation inserts the organization and initial owner membership in one transaction. The server sets the owner from authenticated identity; no owner/user/role input is accepted. A failed membership insert rolls back the organization. Creation is not idempotent: retrying an ambiguous successful request can create another organization. The list accepts only `page` and `limit` under the pagination contract below, ordered by `created_at ASC, id ASC`, and omits `total`. Empty/beyond-end pages return `[]`.
+
+Single-resource reads join membership in the query. Unknown resources and resources outside the caller's memberships return the same safe `404 not_found`. A member with accountant/staff role receives `403 forbidden` for a valid rename. Rename checks and locks the membership row with `FOR SHARE` until its organization update commits, serializing concurrent removal/demotion; the update maintains `updated_at` and preserves `created_at`. Each service operation has a five-second/request-cancellation database deadline and returns a safe `503 service_unavailable` on storage failure. Membership is never cached in the bearer session. Requests already authorized may finish before a later revocation completes.
+
+Apply `00004_create_organizations.sql` explicitly before deploying these routes. There are no invitations, member-management endpoints, ownership transfer, deletion, branch policies, or financial/contact routes yet. Creation grants only the creator's owner membership. No dependency or environment setting is added.
 
 ## Pagination
 

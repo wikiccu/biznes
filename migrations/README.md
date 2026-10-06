@@ -58,9 +58,17 @@ Expiry is enforced even before maintenance. Idle-expired rows can remain until a
 
 Session rollback takes an `ACCESS EXCLUSIVE` table lock and refuses to drop any stored session rows, including expired ones. Failure retains both schema and history; empty rollback drops only the sessions table/index and preserves users. Never delete active production sessions automatically to force rollback. Apply migrations before starting the updated API, and use a deliberate corrective migration when a populated schema must change.
 
+## Organizations and memberships
+
+`00004_create_organizations.sql` creates `biznes.organizations` with native UUID defaults, required 1–120 character names without control characters, and creation/update timestamps. Application validation additionally trims Unicode whitespace and rejects blank names. Names are not unique. `biznes.memberships` links an organization and a global user through a composite primary key, restricted foreign keys, a required `owner`/`admin`/`accountant`/`staff` role, and a creation timestamp. The reverse `(user_id, organization_id)` index supports the authenticated user's organization list.
+
+The concrete organization service creates an organization and its initial owner membership in one transaction. Reads join membership; rename locks and checks the caller's membership before updating. The API needs organizations SELECT/INSERT/UPDATE and memberships SELECT/INSERT plus UPDATE permission for PostgreSQL row locking. Application SELECT/UPDATE statements must keep their membership predicates; possessing an ID is not authorization. Later member-management operations must preserve at least one owner; no such endpoint exists now.
+
+Rollback locks both tables and refuses removal if either contains rows. An empty rollback drops memberships before organizations with `RESTRICT`, preserving users and sessions. Failure leaves schema, data, and Goose history intact. Never delete production business data to force rollback. Apply the migration before deploying the organization routes.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00004_create_organizations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00005_create_contacts.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up
