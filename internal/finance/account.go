@@ -17,6 +17,10 @@ type Account struct {
 
 type AccountInput struct{ Name, Kind, Currency string }
 
+type AccountActivity struct {
+	OrganizationID, AccountID, Currency, IncomeAmount, ExpenseAmount, NetAmount string
+}
+
 var ErrAccountConflict = errors.New("account name already exists")
 
 func validateAccount(input AccountInput, create bool) (AccountInput, error) {
@@ -118,6 +122,33 @@ func (s *Service) GetAccount(ctx context.Context, userID, organizationID, accoun
 	}
 	if err != nil {
 		return Account{}, ErrUnavailable
+	}
+	return item, nil
+}
+
+func (s *Service) GetAccountActivity(ctx context.Context, userID, organizationID, accountID string) (AccountActivity, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var item AccountActivity
+	// ponytail: aggregate the account's records on demand; add rollups only if measured latency requires them.
+	err := s.pool.QueryRow(ctx, `SELECT a.organization_id, a.id, a.currency,
+		totals.income::text, totals.expense::text, (totals.income - totals.expense)::text
+		FROM biznes.financial_accounts a JOIN biznes.memberships m ON m.organization_id = a.organization_id
+		CROSS JOIN LATERAL (
+			SELECT COALESCE(SUM(t.amount) FILTER (WHERE t.kind = 'income'), 0) AS income,
+				COALESCE(SUM(t.amount) FILTER (WHERE t.kind = 'expense'), 0) AS expense
+			FROM biznes.transactions t
+			WHERE t.organization_id = a.organization_id AND t.account_id = a.id AND t.currency = a.currency
+				AND NOT EXISTS (SELECT 1 FROM biznes.transaction_reversals r
+					WHERE r.organization_id = t.organization_id AND r.transaction_id = t.id)
+		) totals
+		WHERE a.organization_id = $1 AND a.id = $2 AND m.user_id = $3`, organizationID, accountID, userID).
+		Scan(&item.OrganizationID, &item.AccountID, &item.Currency, &item.IncomeAmount, &item.ExpenseAmount, &item.NetAmount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AccountActivity{}, organization.ErrNotFound
+	}
+	if err != nil {
+		return AccountActivity{}, ErrUnavailable
 	}
 	return item, nil
 }

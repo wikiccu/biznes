@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and linked full reversal routes, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination, linked full reversal routes, recorded account activity, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -184,8 +184,9 @@ All routes are beneath `/api/v1/organizations/:organization_id/financial-account
 | `GET` collection | `200`, `data` array and `meta.page`/`meta.limit`. |
 | `GET /:account_id` | `200`, `data` account. |
 | `PATCH /:account_id` | `200`, renamed `data` account. |
+| `GET /:account_id/recorded-activity` | `200`, derived activity `data`; see [recorded account activity](#recorded-account-activity). |
 
-The explicit DTO contains `id`, `organization_id`, `name`, `kind`, `currency`, `created_at`, and `updated_at`, with canonical UUIDs and UTC timestamps. Responses use `Cache-Control: no-store`. POST accepts exactly the required `name`, `kind`, and `currency` strings, for example:
+The account metadata DTO contains `id`, `organization_id`, `name`, `kind`, `currency`, `created_at`, and `updated_at`, with canonical UUIDs and UTC timestamps. Responses use `Cache-Control: no-store`. POST accepts exactly the required `name`, `kind`, and `currency` strings, for example:
 
 ```json
 {"name":"Main cash","kind":"cash","currency":"IRR"}
@@ -199,7 +200,7 @@ Exact, case-sensitive names are unique per organization across both account kind
 
 Collection GET accepts only page/limit, requires an empty body, orders by `created_at ASC, id ASC` within the organization, and omits `total`. Valid empty/beyond-end pages return `[]`; inaccessible organizations receive `404`. Single GET rejects body/query strings and joins current membership with both organization/account predicates. All path IDs require canonical lowercase hyphenated UUID syntax. Unknown/inaccessible resources share a safe `404`, even when the caller belongs to multiple organizations. Staff receive `403` for valid writes before account lookup. Client identity/role/tenant claims cannot grant access or move an account.
 
-Writes/lists hold `organization.LockMembership` through transaction completion, serializing concurrent removal/demotion. Single reads use a membership join. Operations have five-second/request-cancellation database deadlines and safe `503` storage errors; already authorized operations may finish before later revocation completes. Account names and raw dependency/parser errors are omitted from application logs. Apply `00007_create_financial_accounts.sql` explicitly before deployment; the composite `(organization_id, id)` key preserves tenant scope. Accounts currently contain metadata only: no opening/current balances, transaction amounts, deletion/archive, bank/card identifiers or credentials, reconciliation, or integrations. No dependency/configuration setting is added.
+Writes/lists hold `organization.LockMembership` through transaction completion, serializing concurrent removal/demotion. Single reads use a membership join. Operations have five-second/request-cancellation database deadlines and safe `503` storage errors; already authorized operations may finish before later revocation completes. Account names and raw dependency/parser errors are omitted from application logs. Apply `00007_create_financial_accounts.sql` explicitly before deployment; the composite `(organization_id, id)` key preserves tenant scope. Account metadata and write routes contain no opening/current balances, transaction amounts, deletion/archive, bank/card identifiers or credentials, reconciliation, or integrations. Unreversed recorded totals are served separately below. No dependency/configuration setting is added.
 
 ## Income/expense transactions
 
@@ -237,7 +238,7 @@ Generate one new UUID idempotency key per intended activity and reuse it after a
 
 Collection GET accepts only page/limit, requires an empty body, orders by `created_at ASC, id ASC` within the organization, and omits `total`. Valid empty/beyond-end pages return `[]`. Single GET rejects body/query strings and joins current membership with both organization/transaction predicates. Path IDs use the shared `400` canonical-UUID guard; unknown/inaccessible resources share `404`. Writes/lists hold the membership lock through commit; operations have five-second/request-cancellation database deadlines and safe `503` storage errors. Already authorized operations may finish before later revocation completes. Monetary values, descriptions, input keys, credential data, and raw storage/parser errors are omitted from application logs.
 
-Apply `00008_create_transactions.sql` explicitly before deployment. Composite foreign keys enforce both tenant scope and account currency/category kind consistency; referenced accounts/categories cannot be deleted, and their currency/category kind cannot be changed while records depend on them. Records have no edit/delete endpoint (`PATCH`/`PUT`/`DELETE` return `405`) and no mutable balance cache. Retain the originals; full linked reversals are implemented below so corrections do not create unrelated opposite-kind revenue/expense. Partial reversals, atomic linked replacements, transfers, opening amounts, contact allocation, filters, and balance/report endpoints are not implemented. Future net activity is the exact signed sum of valid records; it must account for corrections and be distinguished from actual cash position when opening activity/history is incomplete. Aggregates must use an exact wider representation or fail safely on range overflow.
+Apply `00008_create_transactions.sql` explicitly before deployment. Composite foreign keys enforce both tenant scope and account currency/category kind consistency; referenced accounts/categories cannot be deleted, and their currency/category kind cannot be changed while records depend on them. Records have no edit/delete endpoint (`PATCH`/`PUT`/`DELETE` return `405`) and no mutable balance cache. Retain the originals; full linked reversals are implemented below so corrections do not create unrelated opposite-kind revenue/expense. Partial reversals, atomic linked replacements, transfers, opening amounts, contact allocation, filters, and complete cash-balance/period-report endpoints are not implemented. Recorded account activity below uses the exact signed sum of unreversed originals and is distinguished from actual cash position when opening activity/history is incomplete.
 
 ## Transaction reversals
 
@@ -259,7 +260,36 @@ GET requires an empty body and no query string. It joins current membership with
 
 Creation holds current membership through commit; GET uses a membership join. Both have five-second/request-cancellation database deadlines and safe `503` storage errors, including a missing reversal migration. Authorization is rechecked on retries and storage failures fail closed; already authorized operations may finish before later revocation completes. Every handled response uses `Cache-Control: no-store`. Reasons, input keys, original financial values, credentials, and raw dependency/parser errors are omitted from application logs. Apply `00009_create_transaction_reversals.sql` before deployment.
 
-The composite FK links the original within its organization and prevents deleting/rekeying a referenced original; a restricted global-user FK retains reversal provenance. Reversals have no edit/delete/undo route (`PATCH`/`PUT`/`DELETE` return `405`), cannot themselves be targeted as original transactions, and expose no collection/balance endpoint. Partial reversals, actual refunds, atomic linked replacements, and historical “as known then” reporting remain future capabilities. A later replacement needs a new transaction/key; no atomic replacement or replacement link is implemented now. Future corrected aggregates must exclude fully reversed originals, retain audit originals, and use exact wider arithmetic with explicit opening/history limitations.
+The composite FK links the original within its organization and prevents deleting/rekeying a referenced original; a restricted global-user FK retains reversal provenance. Reversals have no edit/delete/undo route (`PATCH`/`PUT`/`DELETE` return `405`), cannot themselves be targeted as original transactions, and expose no collection/balance endpoint. Partial reversals, actual refunds, atomic linked replacements, and historical “as known then” reporting remain future capabilities. A later replacement needs a new transaction/key; no atomic replacement or replacement link is implemented now. Recorded account activity below excludes fully reversed originals using exact wider arithmetic and explicit opening/history limitations. Future period reports must retain those correction semantics and audit originals.
+
+## Recorded account activity
+
+`GET /api/v1/organizations/:organization_id/financial-accounts/:account_id/recorded-activity` requires the existing bearer session and returns `200` with a single `data` object. Owner/admin/accountant/staff members can read. Current membership, selected organization, and account are checked together; unknown accounts and missing/removed membership share generic `404`, including callers belonging to multiple tenants and identical account/original IDs across tenants. An accessible account with no unreversed transactions returns zero totals instead of `404`.
+
+The explicit DTO contains `organization_id`, `account_id`, account `currency`, `income_amount`, `expense_amount`, `net_amount`, `basis`, and `opening_balance_included`. Amounts use canonical decimal strings in whole Rial, without fractions/exponents/leading zeroes; income/expense are nonnegative, and net may be negative. Empty or fully reversed activity returns `"0"` for all three. For example:
+
+```json
+{
+  "data": {
+    "organization_id": "49a21d43-fd32-4798-88a9-0ec245f0355b",
+    "account_id": "c5847f36-b8ed-4b6a-85ea-24436b7d8c65",
+    "currency": "IRR",
+    "income_amount": "12000000",
+    "expense_amount": "4500000",
+    "net_amount": "7500000",
+    "basis": "recorded_transactions",
+    "opening_balance_included": false
+  }
+}
+```
+
+Income and expense sum their matching original kinds; net is income minus expense. The query constrains transactions by organization/account/currency and excludes a transaction only when a reversal matches both its organization and original ID. Full reversals remove the original's recognition rather than adding opposite-kind activity; both audit records and their recording/reversal retry identities remain untouched. PostgreSQL [`sum(bigint)` returns exact `numeric`](https://www.postgresql.org/docs/18/functions-aggregate.html), so totals and subtraction can exceed signed 64-bit limits without a BIGINT cast or binary floating-point arithmetic. The query converts those results directly to decimal text and uses zero for empty sums. Current IRR account currency and whole-Rial units stay explicit; there is no currency conversion.
+
+`basis: "recorded_transactions"` and `opening_balance_included: false` state the result's limits. It covers all committed unreversed originals visible to the query, regardless of occurred date, including backdated and future-dated records. No opening amount, imported-history completeness, transfer, refund movement, or reconciliation basis is established. A zero recorded net does not establish an empty bank/cash account. This is recorded activity, not an actual cash-position assertion, period report, historical “as known then” result, or authoritative as-of timestamp. Date filters, collection summaries, and complete balance workflows remain planned.
+
+Amounts, membership, account, originals, and reversal exclusions use one [PostgreSQL statement snapshot](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED). Uncommitted changes are excluded; a later request after commit reflects the committed record/reversal, while separate requests may see different snapshots. GET uses a membership join like other single reads; already authorized operations may finish before later revocation completes. There is no separately cached balance, read-triggered financial mutation, or update/delete route. Computation reads the account's indexed records on demand with a five-second/request-cancellation deadline; a rollup is deferred until measured latency justifies it.
+
+GET accepts an empty body and no query string, including no page/limit, period, currency, or identity overrides. Violations use `400 invalid_request`; malformed canonical path UUIDs use the shared `400` guard. Missing/invalid bearer sessions use `401`. Unsupported methods, including `HEAD`/`OPTIONS`, return shared `405` with `Allow: GET`. Responses use `Cache-Control: no-store` and safe errors; amounts, credentials, raw SQL/dependency errors, and raw paths are omitted from application logs. Dependency failures, denied SELECT permissions, and missing transaction/reversal schema return safe `503` rather than fabricated zero totals. Apply existing migrations through `00009` before deployment. No new migration, dependency, or configuration is added; financial SELECT permissions plus existing identity/session/membership permissions suffice, with no transaction/reversal INSERT/UPDATE/DELETE needed for this read.
 
 ## Pagination
 

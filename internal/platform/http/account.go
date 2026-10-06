@@ -19,6 +19,17 @@ type publicAccount struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type publicAccountActivity struct {
+	OrganizationID         string `json:"organization_id"`
+	AccountID              string `json:"account_id"`
+	Currency               string `json:"currency"`
+	IncomeAmount           string `json:"income_amount"`
+	ExpenseAmount          string `json:"expense_amount"`
+	NetAmount              string `json:"net_amount"`
+	Basis                  string `json:"basis"`
+	OpeningBalanceIncluded bool   `json:"opening_balance_included"`
+}
+
 func accountDTO(item finance.Account) publicAccount {
 	return publicAccount{item.ID, item.OrganizationID, item.Name, item.Kind, item.Currency, item.CreatedAt.UTC(), item.UpdatedAt.UTC()}
 }
@@ -84,6 +95,31 @@ func getAccount(service *finance.Service) gin.HandlerFunc {
 		}
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{"data": accountDTO(item)})
+	}
+}
+
+func getAccountActivity(service *finance.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		organizationID, ok := organizationID(c)
+		if !ok {
+			return
+		}
+		id, ok := resourceID(c, "account_id")
+		if !ok {
+			return
+		}
+		user := c.MustGet("identity_user").(identity.User)
+		item, err := service.GetAccountActivity(c.Request.Context(), user.ID, organizationID, id)
+		if err != nil {
+			writeFinanceError(c, err)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"data": publicAccountActivity{
+			OrganizationID: item.OrganizationID, AccountID: item.AccountID, Currency: item.Currency,
+			IncomeAmount: item.IncomeAmount, ExpenseAmount: item.ExpenseAmount, NetAmount: item.NetAmount,
+			Basis: "recorded_transactions", OpeningBalanceIncluded: false,
+		}})
 	}
 }
 
