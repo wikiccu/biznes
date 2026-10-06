@@ -72,9 +72,15 @@ Rollback locks both tables and refuses removal if either contains rows. An empty
 
 The API needs contacts SELECT/INSERT/UPDATE in addition to the existing identity/organization permissions. Mutations and lists lock current membership in their transaction; single reads join it. Every data query/update includes the organization ID, and payloads cannot replace it. Rollback takes an `ACCESS EXCLUSIVE` table lock and refuses populated storage; empty rollback drops only contacts with `RESTRICT`, retaining users, sessions, organizations, memberships, and their migration history. Never remove production contacts to force rollback. Apply this migration before deploying contact routes.
 
+## Transaction categories
+
+`00006_create_transaction_categories.sql` introduces `biznes.transaction_categories` with a restricted organization FK, native UUID defaults, a composite `(organization_id, id)` primary key, name/kind, and creation/update timestamps. Names have 1–120 character/control constraints; kind is `income` or `expense`. A named unique constraint on `(organization_id, kind, name)` uses exact `C` collation and protects creation/rename races. A tenant/creation-time/ID index supports stable listing. Application validation trims Unicode names before writing; the API keeps kind fixed after creation.
+
+The API needs transaction_categories SELECT/INSERT and UPDATE on name/updated_at, alongside current identity/membership permissions. Writes/lists hold the membership row lock; single reads join membership. Every data query/update includes organization scope. Owner/admin/accountant members can manage these categories; this does not broaden contact/organization write policies. Rollback locks the table and refuses stored rows; empty rollback drops only this table/indexes with `RESTRICT`, retaining prior domain data and migration history. Never remove production categories to force rollback. Apply the migration before deploying category routes. Categories do not store amounts or alter balances.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00006_create_transaction_categories.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00007_create_financial_accounts.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

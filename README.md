@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations with membership/role authorization, and tenant-scoped contact creation, listing, retrieval, and replacement. Financial features remain planned. Hosted validation status is available in GitHub Actions.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, and income/expense transaction categories with membership/role authorization. Financial accounts, transactions, and balances remain planned. Hosted validation status is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,7 +81,7 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, and organization-owned contacts. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, organization-owned contacts, and transaction categories. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### User persistence
 
@@ -129,6 +129,12 @@ Create/rename accept a strict UTF-8 JSON object with only a `name` string, cappe
 Apply [migration 00005](migrations/00005_create_contacts.sql) before using `/api/v1/organizations/:organization_id/contacts`. `POST` creates a contact; `GET` lists that organization's contacts with `page`/`limit`; `GET /:contact_id` retrieves one; `PUT /:contact_id` replaces its editable fields. All require a bearer session and current organization membership. All members can read; owner/admin members can create or replace. Both organization and contact IDs scope every lookup/write.
 
 Send a strict JSON object with required `name` and `kind` (`customer`, `supplier`, or `both`), and optional `email`, `phone`, and `notes` strings. Names support Persian and contain 1–120 code points. Phone numbers are recorded as free-form text up to 64 code points; email uses plain mailbox syntax up to 254 UTF-8 bytes, with case preserved. Multiline notes allow up to 2000 code points. The body cap is 8 KiB. `PUT` requires name/kind and clears omitted optional fields. Names need not be unique. There is no deletion, contact search/filter, tags, activity history, or financial balance yet. See [the endpoint contract](docs/API_CONVENTIONS.md#contacts) for validation, permissions, and concurrency behavior.
+
+### Transaction categories
+
+Apply [migration 00006](migrations/00006_create_transaction_categories.sql) before using `/api/v1/organizations/:organization_id/transaction-categories`. `POST` creates a category from a `name` and `kind` (`income` or `expense`); `GET` lists categories with `page`/`limit`; `GET /:category_id` retrieves one; `PATCH /:category_id` renames it using only `name`. Kind stays fixed through the API. Owner/admin/accountant members can create/rename; every member can read. All operations enforce the selected organization and current membership.
+
+Names contain 1–120 Unicode code points after trimming, reject control characters, and preserve Persian text. Exact, case-sensitive names are unique within organization/kind; duplicate creation or rename returns safe `409` without changing existing categories. The same name in another organization or the other kind is allowed. Categories have no amounts or balances. No deletion/archive, hierarchy, defaults, or transaction recording is added. See [the endpoint contract](docs/API_CONVENTIONS.md#transaction-categories).
 
 ### Configuration
 
@@ -282,4 +288,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Begin the financial persistence foundation and transaction categories in small increments, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Preserve tenant scope, use exact IRR amounts, and define deterministic transaction/balance semantics before recording financial activity.
+Add financial account persistence in a small increment, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap), before income/expense recording. Preserve tenant scope, use exact IRR amounts, and define deterministic transaction/balance semantics without automatic balance edits.

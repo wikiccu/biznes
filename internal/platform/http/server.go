@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wikiccu/biznes/internal/contact"
+	"github.com/wikiccu/biznes/internal/finance"
 	"github.com/wikiccu/biznes/internal/identity"
 	"github.com/wikiccu/biznes/internal/organization"
 	"github.com/wikiccu/biznes/internal/platform/config"
@@ -50,6 +51,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	contacts.GET("", listContacts(contactService))
 	contacts.GET("/:contact_id", emptyAuthRequest, getContact(contactService))
 	contacts.PUT("/:contact_id", saveContact(contactService, true))
+	financeService := finance.NewService(pool)
+	categories := organizations.Group("/:organization_id/transaction-categories")
+	categories.POST("", saveCategory(financeService, false))
+	categories.GET("", listCategories(financeService))
+	categories.GET("/:category_id", emptyAuthRequest, getCategory(financeService))
+	categories.PATCH("/:category_id", saveCategory(financeService, true))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

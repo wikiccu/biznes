@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact routes with pagination, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category routes with pagination, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -48,7 +48,7 @@ Use `httpserver.WriteError` in `internal/platform/http` for public handler error
 | `500` | `internal_error` | Unexpected internal failure, with a fixed safe message. |
 | `503` | `service_unavailable` | A dependency needed for the requested operation is unavailable. |
 
-Identity, organization, and contact endpoints implement the applicable errors below, including membership/role enforcement. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
+Identity, organization, contact, and category endpoints implement the applicable errors below, including membership/role enforcement. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
 
 HTTP status and header semantics follow [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-15). Responses created by the HTTP server before Gin handles a request, such as malformed HTTP framing, do not necessarily have this envelope or a request ID.
 
@@ -120,7 +120,7 @@ Creation inserts the organization and initial owner membership in one transactio
 
 Single-resource reads join membership in the query. Unknown resources and resources outside the caller's memberships return the same safe `404 not_found`. A member with accountant/staff role receives `403 forbidden` for a valid rename. Rename checks and locks the membership row with `FOR SHARE` until its organization update commits, serializing concurrent removal/demotion; the update maintains `updated_at` and preserves `created_at`. Each service operation has a five-second/request-cancellation database deadline and returns a safe `503 service_unavailable` on storage failure. Membership is never cached in the bearer session. Requests already authorized may finish before a later revocation completes.
 
-Apply `00004_create_organizations.sql` explicitly before deploying these routes. There are no invitations, member-management endpoints, ownership transfer, organization deletion, branch policies, or financial routes yet. Creation grants only the creator's owner membership. Contacts use the separate migration and endpoints below. No dependency or environment setting is added.
+Apply `00004_create_organizations.sql` explicitly before deploying these routes. There are no invitations, member-management endpoints, ownership transfer, organization deletion, branch policies, or financial account/transaction routes yet. Creation grants only the creator's owner membership. Contacts and categories use separate migrations and endpoints below. No dependency or environment setting is added.
 
 ## Contacts
 
@@ -151,7 +151,28 @@ Collection GET accepts only the shared bounded page/limit contract and requires 
 
 Contact writes and lists reuse `organization.LockMembership` (`FOR SHARE`) and hold it until commit, serializing concurrent membership removal/demotion. GET uses a membership join in its own statement. Every operation has a five-second/request-cancellation database deadline and fails closed on storage errors with safe `503` responses. Membership is never cached in a session; already authorized operations may finish before a later revocation completes. Contact content and raw storage/parser errors are omitted from application logs.
 
-Apply `00005_create_contacts.sql` explicitly before deployment. The composite primary key is `(organization_id, id)`; organization IDs participate in every reference/lookup. There are no contact deletion/archive/search/filter/tag/history or financial/balance endpoints yet, and no new dependency/configuration setting.
+Apply `00005_create_contacts.sql` explicitly before deployment. The composite primary key is `(organization_id, id)`; organization IDs participate in every reference/lookup. There are no contact deletion/archive/search/filter/tag/history or financial account/transaction/balance endpoints yet, and no new dependency/configuration setting.
+
+## Transaction categories
+
+All routes are beneath `/api/v1/organizations/:organization_id/transaction-categories` and require the existing bearer session before input validation. The paths select candidates; current database membership authorizes each operation. Owner/admin/accountant members can create or rename categories; staff can read. This financial metadata policy does not grant accountants permission to manage contacts or organizations.
+
+| Route suffix | Success |
+| --- | --- |
+| `POST` collection | `201`, `data` category, retrieval `Location`. |
+| `GET` collection | `200`, `data` array and `meta.page`/`meta.limit`. |
+| `GET /:category_id` | `200`, `data` category. |
+| `PATCH /:category_id` | `200`, renamed `data` category. |
+
+The explicit DTO contains `id`, `organization_id`, `name`, `kind`, `created_at`, and `updated_at`, with canonical UUIDs and UTC timestamps. Responses use `Cache-Control: no-store`. POST accepts only `name` and `kind` strings. PATCH accepts only `name`; kind and tenant/resource IDs cannot be changed. Both use the shared strict UTF-8 JSON/media contract and 8 KiB body cap, reject query strings, and return `400` for unknown/duplicate/case-variant keys, wrong types/nulls, malformed/trailing JSON, invalid UTF-8, or lone surrogate escapes.
+
+Names are trimmed Unicode text, 1–120 code points, with control checks before trimming. Persian, combining characters, emoji, and zero-width non-joiners are preserved without normalization or case folding. Kind is exactly `income` or `expense`, without trimming/case conversion; transfers are outside those classifications. Missing/blank fields use `422 required`, excessive name length uses `out_of_range`, and controls/invalid kinds use `invalid_format`, with deterministic name-then-kind details. PATCH requires a name and preserves kind, ID, tenant, and creation time while maintaining `updated_at`.
+
+Exact, case-sensitive names are unique per organization and kind under PostgreSQL `C` collation. The same name in another organization or the other kind is allowed. Duplicate creation/rename returns safe `409 conflict` without names, SQL, or existing record details in the error. Native uniqueness protects races across API processes. Failed renames leave the existing category unchanged. Retrying an identical trimmed name/kind returns a conflict while that name remains stored; a later rename can free it for creation again. There is no idempotency-key or optimistic-concurrency implementation, and successful concurrent renames use last committed values.
+
+Collection GET accepts only page/limit, requires an empty body, orders by `created_at ASC, id ASC` within the organization, and omits `total`. Valid empty/beyond-end pages return `[]`; inaccessible organizations receive `404`. Single GET rejects body/query strings and joins membership with both organization/category predicates. All path IDs require canonical lowercase hyphenated UUID syntax. Unknown/inaccessible resources share a safe `404`, even when the caller belongs to multiple organizations. Staff receive `403` for valid writes before category lookup. Client user/role/tenant claims cannot grant access or move a category.
+
+Writes/lists reuse `organization.LockMembership` through transaction completion, serializing concurrent removal/demotion. Single reads use a membership join. Each operation has a five-second/request-cancellation database deadline and returns a safe `503` for storage failure. Already authorized operations may finish before later revocation completes. Category names and raw dependency/parser errors are omitted from application logs. Apply `00006_create_transaction_categories.sql` explicitly before deploying the routes. The composite `(organization_id, id)` resource key preserves tenant scope. There are no category deletion/archive/hierarchy/default/filter, monetary amount, account, transaction, or balance endpoints yet; no dependency/configuration setting is added.
 
 ## Pagination
 
