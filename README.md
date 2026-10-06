@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, and cash/bank accounts with membership/role authorization. Transaction recording and balances remain planned. Hosted validation status is available in GitHub Actions.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, cash/bank accounts, and exact IRR transaction recording with membership/role authorization. Corrections and balances remain planned. Hosted validation status is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,7 +81,7 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, organization-owned contacts, transaction categories, and financial accounts. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, organization-owned contacts, transaction categories, financial accounts, and immutable API transaction records. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### User persistence
 
@@ -134,13 +134,19 @@ Send a strict JSON object with required `name` and `kind` (`customer`, `supplier
 
 Apply [migration 00006](migrations/00006_create_transaction_categories.sql) before using `/api/v1/organizations/:organization_id/transaction-categories`. `POST` creates a category from a `name` and `kind` (`income` or `expense`); `GET` lists categories with `page`/`limit`; `GET /:category_id` retrieves one; `PATCH /:category_id` renames it using only `name`. Kind stays fixed through the API. Owner/admin/accountant members can create/rename; every member can read. All operations enforce the selected organization and current membership.
 
-Names contain 1–120 Unicode code points after trimming, reject control characters, and preserve Persian text. Exact, case-sensitive names are unique within organization/kind; duplicate creation or rename returns safe `409` without changing existing categories. The same name in another organization or the other kind is allowed. Categories have no amounts or balances. No deletion/archive, hierarchy, defaults, or transaction recording is added. See [the endpoint contract](docs/API_CONVENTIONS.md#transaction-categories).
+Names contain 1–120 Unicode code points after trimming, reject control characters, and preserve Persian text. Exact, case-sensitive names are unique within organization/kind; duplicate creation or rename returns safe `409` without changing existing categories. The same name in another organization or the other kind is allowed. Categories have no amounts or balances. Category deletion/archive, hierarchy, and defaults remain planned. See [the endpoint contract](docs/API_CONVENTIONS.md#transaction-categories).
 
 ### Financial accounts
 
 Apply [migration 00007](migrations/00007_create_financial_accounts.sql) before using `/api/v1/organizations/:organization_id/financial-accounts`. `POST` creates an account from `name`, `kind` (`cash` or `bank`), and required `currency: "IRR"`; `GET` lists accounts with `page`/`limit`; `GET /:account_id` retrieves one; `PATCH /:account_id` renames it using only `name`. Kind and currency stay fixed through the API. Owner/admin/accountant members can create/rename; every member can read. Every operation enforces the selected organization and current membership.
 
-Names contain 1–120 Unicode code points after trimming and reject controls. Exact, case-sensitive names are unique across account kinds within an organization; conflicts return safe `409`. Currency is explicit: IRR uses whole Rial (scale zero), and Toman remains a presentation denomination. Account metadata includes no opening balance, current balance, amounts, bank credentials, or card data. Transaction recording will establish exact amounts and balance semantics in a separate increment. See [the endpoint contract](docs/API_CONVENTIONS.md#financial-accounts).
+Names contain 1–120 Unicode code points after trimming and reject controls. Exact, case-sensitive names are unique across account kinds within an organization; conflicts return safe `409`. Currency is explicit: IRR uses whole Rial (scale zero), and Toman remains a presentation denomination. Account metadata includes no opening balance, current balance, amounts, bank credentials, or card data. Transactions record exact amounts separately; balance reporting remains a separate capability. See [the endpoint contract](docs/API_CONVENTIONS.md#financial-accounts).
+
+### Income/expense transactions
+
+Apply [migration 00008](migrations/00008_create_transactions.sql) before using `/api/v1/organizations/:organization_id/transactions`. `POST` records a transaction; `GET` lists records with `page`/`limit`; `GET /:transaction_id` retrieves one. Owner/admin/accountant members can record; every member can read. Select an account and category within the organization: currency must be `IRR` and direction comes from the category's income/expense kind. Supply a positive whole-Rial `amount` as a decimal string, an explicit `occurred_at` RFC 3339 instant with at most six fractional digits, a canonical UUID `idempotency_key`, and optional `description` text.
+
+Native tenant-scoped uniqueness makes identical retries return the same record (`200` instead of first-create `201`) across replicas and restarts; changed input with that key returns `409`. Generate a new key for each intended activity and reuse it after an uncertain response. Records retain their creator and creation instant, with no edit/delete route or mutable balance column. Corrections, transfers, opening amounts, and deterministic balance reporting follow separately. See [the endpoint contract](docs/API_CONVENTIONS.md#incomeexpense-transactions) for exact bounds, validation, and retry semantics.
 
 ### Configuration
 
@@ -294,4 +300,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Add tenant-scoped income/expense transaction recording against the implemented accounts and categories, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Use exact IRR decimal-string amounts, validate every reference within the organization, and define retry, correction, and balance semantics before persisting financial activity.
+Add explicit linked transaction reversals/corrections before deterministic balance reporting, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Preserve original records and creator history, make corrections retry-safe, and keep corrected income/expense totals separate from transfers and opening amounts.

@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account routes with pagination, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -48,7 +48,7 @@ Use `httpserver.WriteError` in `internal/platform/http` for public handler error
 | `500` | `internal_error` | Unexpected internal failure, with a fixed safe message. |
 | `503` | `service_unavailable` | A dependency needed for the requested operation is unavailable. |
 
-Identity, organization, contact, category, and account endpoints implement the applicable errors below, including membership/role enforcement. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
+Identity, organization, contact, category, account, and transaction endpoints implement the applicable errors below, including membership/role enforcement. `/ready` retains its probe-specific `503` payload. Shared routing returns JSON `404` for unknown paths and JSON `405` with Gin's `Allow` header for unsupported methods on known paths. That includes `HEAD`/`OPTIONS` unless those methods are explicitly registered; HTTP `HEAD` responses carry only headers and status, without a body. Trailing-slash redirects remain disabled. A missing business resource must not disclose whether it exists in another tenant.
 
 HTTP status and header semantics follow [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-15). Responses created by the HTTP server before Gin handles a request, such as malformed HTTP framing, do not necessarily have this envelope or a request ID.
 
@@ -120,7 +120,7 @@ Creation inserts the organization and initial owner membership in one transactio
 
 Single-resource reads join membership in the query. Unknown resources and resources outside the caller's memberships return the same safe `404 not_found`. A member with accountant/staff role receives `403 forbidden` for a valid rename. Rename checks and locks the membership row with `FOR SHARE` until its organization update commits, serializing concurrent removal/demotion; the update maintains `updated_at` and preserves `created_at`. Each service operation has a five-second/request-cancellation database deadline and returns a safe `503 service_unavailable` on storage failure. Membership is never cached in the bearer session. Requests already authorized may finish before a later revocation completes.
 
-Apply `00004_create_organizations.sql` explicitly before deploying these routes. There are no invitations, member-management endpoints, ownership transfer, organization deletion, branch policies, or transaction routes yet. Creation grants only the creator's owner membership. Contacts, categories, and financial accounts use separate migrations and endpoints below. No dependency or environment setting is added.
+Apply `00004_create_organizations.sql` explicitly before deploying these routes. There are no invitations, member-management endpoints, ownership transfer, organization deletion, or branch policies yet. Creation grants only the creator's owner membership. Contacts, categories, and financial accounts use separate migrations and endpoints below. No dependency or environment setting is added.
 
 ## Contacts
 
@@ -151,7 +151,7 @@ Collection GET accepts only the shared bounded page/limit contract and requires 
 
 Contact writes and lists reuse `organization.LockMembership` (`FOR SHARE`) and hold it until commit, serializing concurrent membership removal/demotion. GET uses a membership join in its own statement. Every operation has a five-second/request-cancellation database deadline and fails closed on storage errors with safe `503` responses. Membership is never cached in a session; already authorized operations may finish before a later revocation completes. Contact content and raw storage/parser errors are omitted from application logs.
 
-Apply `00005_create_contacts.sql` explicitly before deployment. The composite primary key is `(organization_id, id)`; organization IDs participate in every reference/lookup. There are no contact deletion/archive/search/filter/tag/history or transaction/balance endpoints yet, and no new dependency/configuration setting.
+Apply `00005_create_contacts.sql` explicitly before deployment. The composite primary key is `(organization_id, id)`; organization IDs participate in every reference/lookup. There are no contact deletion/archive/search/filter/tag/history or balance endpoints yet, and no new dependency/configuration setting.
 
 ## Transaction categories
 
@@ -172,7 +172,7 @@ Exact, case-sensitive names are unique per organization and kind under PostgreSQ
 
 Collection GET accepts only page/limit, requires an empty body, orders by `created_at ASC, id ASC` within the organization, and omits `total`. Valid empty/beyond-end pages return `[]`; inaccessible organizations receive `404`. Single GET rejects body/query strings and joins membership with both organization/category predicates. All path IDs require canonical lowercase hyphenated UUID syntax. Unknown/inaccessible resources share a safe `404`, even when the caller belongs to multiple organizations. Staff receive `403` for valid writes before category lookup. Client user/role/tenant claims cannot grant access or move a category.
 
-Writes/lists reuse `organization.LockMembership` through transaction completion, serializing concurrent removal/demotion. Single reads use a membership join. Each operation has a five-second/request-cancellation database deadline and returns a safe `503` for storage failure. Already authorized operations may finish before later revocation completes. Category names and raw dependency/parser errors are omitted from application logs. Apply `00006_create_transaction_categories.sql` explicitly before deploying the routes. The composite `(organization_id, id)` resource key preserves tenant scope. There are no category deletion/archive/hierarchy/default/filter, monetary amount, transaction, or balance endpoints yet; no dependency/configuration setting is added.
+Writes/lists reuse `organization.LockMembership` through transaction completion, serializing concurrent removal/demotion. Single reads use a membership join. Each operation has a five-second/request-cancellation database deadline and returns a safe `503` for storage failure. Already authorized operations may finish before later revocation completes. Category names and raw dependency/parser errors are omitted from application logs. Apply `00006_create_transaction_categories.sql` explicitly before deploying the routes. The composite `(organization_id, id)` resource key preserves tenant scope. There are no category deletion/archive/hierarchy/default/filter or balance endpoints yet; no dependency/configuration setting is added.
 
 ## Financial accounts
 
@@ -201,6 +201,44 @@ Collection GET accepts only page/limit, requires an empty body, orders by `creat
 
 Writes/lists hold `organization.LockMembership` through transaction completion, serializing concurrent removal/demotion. Single reads use a membership join. Operations have five-second/request-cancellation database deadlines and safe `503` storage errors; already authorized operations may finish before later revocation completes. Account names and raw dependency/parser errors are omitted from application logs. Apply `00007_create_financial_accounts.sql` explicitly before deployment; the composite `(organization_id, id)` key preserves tenant scope. Accounts currently contain metadata only: no opening/current balances, transaction amounts, deletion/archive, bank/card identifiers or credentials, reconciliation, or integrations. No dependency/configuration setting is added.
 
+## Income/expense transactions
+
+All routes are beneath `/api/v1/organizations/:organization_id/transactions` and require the existing bearer session before input validation. Owner/admin/accountant members can record transactions; every member can read. Current membership is checked on every operation, including retries; staff cannot replay a write, and removed members receive `404`.
+
+| Route suffix | Success |
+| --- | --- |
+| `POST` collection | `201` for new activity or `200` for an identical retry, `data` transaction, retrieval `Location`. |
+| `GET` collection | `200`, `data` array and `meta.page`/`meta.limit`. |
+| `GET /:transaction_id` | `200`, `data` transaction. |
+
+POST accepts the required string fields `idempotency_key`, `account_id`, `category_id`, `amount`, `currency`, `occurred_at`, and optional `description` (default `""`). It uses the shared strict UTF-8 JSON/media contract, 8 KiB cap, and no query string. Unknown/duplicate/case-variant keys, numbers/nulls/wrong types, malformed/trailing JSON, invalid UTF-8, and lone surrogate escapes return `400`. Client `kind`, `created_by`, `organization_id`, `id`, and balances are not accepted.
+
+```json
+{
+  "idempotency_key":"61f57640-2a52-4b4c-9baf-52e3ad93de75",
+  "account_id":"3e44f242-4fb1-47ba-b92f-4bbcfeaf2a5a",
+  "category_id":"9cfe2188-0b2b-49a2-b758-63227c647146",
+  "amount":"85000000",
+  "currency":"IRR",
+  "occurred_at":"2026-10-07T12:34:56.123456+03:30",
+  "description":"Cash receipt"
+}
+```
+
+The three input IDs must be canonical lowercase hyphenated UUIDs; missing IDs use `422 required` and malformed values use `invalid_format`. Accounts/categories must exist in the selected organization, even when the caller belongs to both organizations. A new key with unavailable references returns a generic `404` without revealing which resource is missing. Direction is derived from the category and stored as `income` or `expense`; amount is always positive, with income contributing positively and expense negatively to future recorded net activity.
+
+Amount uses canonical ASCII decimal digits without signs, leading zeroes, whitespace, fractions, separators, or exponents. Supported values are `"1"` through `"9223372036854775807"`, stored as PostgreSQL `BIGINT` and returned as decimal strings. Missing amount uses `required`; malformed strings use `invalid_format`; zero/overflow use `out_of_range`. Currency is required and exactly `IRR`, using whole Rial units (scale zero), and must match the account. No rounding, floating-point amount, Toman input, or implicit currency conversion is performed.
+
+`occurred_at` is required: strict RFC 3339 with uppercase `T`/`Z` or a numeric offset, at most six decimal fractional digits, and a normalized UTC year from 1 through 9999. Invalid calendar/time/offset values, leap seconds, unsupported precision, and instants outside that UTC range use `422 invalid_format`; omission uses `required`. Sub-microsecond input is rejected instead of silently rounded by PostgreSQL. Offsets normalize to UTC; past and future instants are accepted without business-date restrictions. Description preserves whitespace/Persian/Unicode and supports up to 2000 code points, with LF/CR/tab allowed but other controls rejected. Excessive length uses `out_of_range` and invalid controls use `invalid_format`. Field details are ordered idempotency key, account, category, amount, currency, occurred time, then description.
+
+The explicit response DTO contains `id`, `organization_id`, `idempotency_key`, `account_id`, `category_id`, `kind`, `amount`, `currency`, `occurred_at`, `description`, `created_by`, and `created_at`. IDs are canonical UUIDs; timestamps use UTC. `created_by` comes from the authenticated creator, and `created_at` comes from PostgreSQL. Account/category renaming does not rewrite financial values or provenance. Every response uses `Cache-Control: no-store`.
+
+Generate one new UUID idempotency key per intended activity and reuse it after a timeout, disconnection, or uncertain `503` outcome. A unique `(organization_id, idempotency_key)` constraint protects simultaneous retries across processes. Identical validated account/category IDs, amount, currency, normalized occurred instant, and exact description return the original DTO with `200` and the same `Location`. Omitted versus empty description and equivalent UTC offsets are identical; different descriptions/instants/amounts/references return safe `409 conflict` with no original payload in the error. Retries recheck current write permission; any authorized recording member can replay identical input while the original creator stays unchanged. Keys remain reserved for the record's lifetime; the same key may be used independently in another organization. `X-Request-ID` is diagnostic and cannot substitute for this key. A new key creates a distinct record, even for an otherwise identical payload.
+
+Collection GET accepts only page/limit, requires an empty body, orders by `created_at ASC, id ASC` within the organization, and omits `total`. Valid empty/beyond-end pages return `[]`. Single GET rejects body/query strings and joins current membership with both organization/transaction predicates. Path IDs use the shared `400` canonical-UUID guard; unknown/inaccessible resources share `404`. Writes/lists hold the membership lock through commit; operations have five-second/request-cancellation database deadlines and safe `503` storage errors. Already authorized operations may finish before later revocation completes. Monetary values, descriptions, input keys, credential data, and raw storage/parser errors are omitted from application logs.
+
+Apply `00008_create_transactions.sql` explicitly before deployment. Composite foreign keys enforce both tenant scope and account currency/category kind consistency; referenced accounts/categories cannot be deleted, and their currency/category kind cannot be changed while records depend on them. Records have no edit/delete endpoint (`PATCH`/`PUT`/`DELETE` return `405`) and no mutable balance cache. Retain the originals; planned corrections must append an explicit linked reversal/replacement so they do not disguise a correction as unrelated opposite-kind revenue/expense. Reversals, transfers, opening amounts, contact allocation, filters, and balance/report endpoints are not implemented. Future net activity is the exact signed sum of valid records; it must account for corrections and be distinguished from actual cash position when opening activity/history is incomplete. Aggregates must use an exact wider representation or fail safely on range overflow.
+
 ## Pagination
 
 List endpoints use `page` and `limit` initially:
@@ -222,4 +260,4 @@ Represent instants as RFC 3339 strings normalized to UTC with `Z`, for example `
 
 Use opaque UUID resource IDs, serialized in canonical hyphenated lowercase form. Validate path ID syntax before lookup and enforce tenant authorization on every lookup. UUID generation will be selected with the first persistence model; a UUID is not an authorization token.
 
-Money uses signed 64-bit integer minor units and an explicit currency. Exchange potentially large amounts as decimal strings; do not use floating-point JSON values or silently round. Initial canonical storage is IRR/Rial, with Toman converted at presentation boundaries as specified in the product blueprint. These are wire/domain conventions; no money, date, or UUID framework is added by this increment.
+Money uses signed 64-bit integer minor units and an explicit currency. Exchange potentially large amounts as decimal strings; do not use floating-point JSON values or silently round. Initial canonical storage is IRR/Rial, with Toman converted at presentation boundaries as specified in the product blueprint. Transaction recording implements exact IRR amounts with native integer/string conversion and PostgreSQL constraints, without a money, date, or UUID framework.
