@@ -2,39 +2,19 @@ package httpserver
 
 import (
 	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wikiccu/biznes/internal/finance"
 	"github.com/wikiccu/biznes/internal/identity"
 )
 
-type publicDebt struct {
-	ID             string    `json:"id"`
-	OrganizationID string    `json:"organization_id"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	ContactID      string    `json:"contact_id"`
-	Amount         string    `json:"amount"`
-	Currency       string    `json:"currency"`
-	DueDate        string    `json:"due_date"`
-	Description    string    `json:"description"`
-	CreatedBy      string    `json:"created_by"`
-	CreatedAt      time.Time `json:"created_at"`
-}
-
-func debtDTO(item finance.Debt) publicDebt {
-	return publicDebt{item.ID, item.OrganizationID, item.IdempotencyKey, item.ContactID,
-		strconv.FormatInt(item.Amount, 10), item.Currency, item.DueDate.Format(time.DateOnly), item.Description, item.CreatedBy, item.CreatedAt.UTC()}
-}
-
-func recordReceivable(service *finance.Service) gin.HandlerFunc {
+func recordPayable(service *finance.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
 			return
 		}
-		var input finance.ReceivableInput
+		var input finance.PayableInput
 		if !jsonStringInput(c, map[string]*string{
 			"idempotency_key": &input.IdempotencyKey, "contact_id": &input.ContactID, "amount": &input.Amount,
 			"currency": &input.Currency, "due_date": &input.DueDate, "description": &input.Description,
@@ -42,7 +22,7 @@ func recordReceivable(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, created, err := service.RecordReceivable(c.Request.Context(), user.ID, organizationID, input)
+		item, created, err := service.RecordPayable(c.Request.Context(), user.ID, organizationID, input)
 		if err != nil {
 			writeFinanceError(c, err)
 			return
@@ -52,23 +32,23 @@ func recordReceivable(service *finance.Service) gin.HandlerFunc {
 			status = http.StatusCreated
 		}
 		c.Header("Cache-Control", "no-store")
-		c.Header("Location", "/api/v1/organizations/"+organizationID+"/receivables/"+item.ID)
+		c.Header("Location", "/api/v1/organizations/"+organizationID+"/payables/"+item.ID)
 		c.JSON(status, gin.H{"data": debtDTO(item)})
 	}
 }
 
-func getReceivable(service *finance.Service) gin.HandlerFunc {
+func getPayable(service *finance.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
 			return
 		}
-		id, ok := resourceID(c, "receivable_id")
+		id, ok := resourceID(c, "payable_id")
 		if !ok {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetReceivable(c.Request.Context(), user.ID, organizationID, id)
+		item, err := service.GetPayable(c.Request.Context(), user.ID, organizationID, id)
 		if err != nil {
 			writeFinanceError(c, err)
 			return
@@ -78,7 +58,7 @@ func getReceivable(service *finance.Service) gin.HandlerFunc {
 	}
 }
 
-func listReceivables(service *finance.Service) gin.HandlerFunc {
+func listPayables(service *finance.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -89,7 +69,7 @@ func listReceivables(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		items, err := service.ListReceivables(c.Request.Context(), user.ID, organizationID, page, limit)
+		items, err := service.ListPayables(c.Request.Context(), user.ID, organizationID, page, limit)
 		if err != nil {
 			writeFinanceError(c, err)
 			return

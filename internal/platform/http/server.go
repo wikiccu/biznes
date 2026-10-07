@@ -73,6 +73,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	receivables.POST("", recordReceivable(financeService))
 	receivables.GET("", listReceivables(financeService))
 	receivables.GET("/:receivable_id", emptyAuthRequest, getReceivable(financeService))
+	payables := organizations.Group("/:organization_id/payables")
+	payables.POST("", recordPayable(financeService))
+	payables.GET("", listPayables(financeService))
+	payables.GET("/:payable_id", emptyAuthRequest, getPayable(financeService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

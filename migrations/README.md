@@ -114,9 +114,17 @@ Apply the migration explicitly before deploying receivable routes. Existing cont
 
 Rollback takes an ACCESS EXCLUSIVE lock and refuses populated receivables. Empty rollback drops only this table/indexes with RESTRICT, retaining all earlier data and Goose history. Schema changes and version recording are transactional, including failures and dependency protection. Never delete production obligations to force rollback.
 
+## Payables
+
+`00011_create_payables.sql` introduces `biznes.payables` using the receivable storage invariants: native UUID defaults, composite tenant/resource keys, restricted organization/contact/creator FKs, positive BIGINT whole-Rial amounts with explicit IRR currency, finite Gregorian DATE within years 0001–9999, bounded descriptions, server creation time, and stable/contact/creator indexes. The organization/key unique constraint is independent of receivable/transaction/reversal namespaces. Existing migrations and stored records remain unchanged; applying 00011 supports populated contacts, transactions, reversals, and receivables.
+
+The application locks the selected tenant contact and requires supplier/both classification for new records. Later reclassification preserves stored obligations and matching retries; classification remains outside the FK, while PostgreSQL enforces tenant ownership and restricted deletion/rekeying. The API needs payables SELECT/INSERT, contact SELECT and existing UPDATE permission for row locking, plus current identity/session/membership permissions. Do not grant payable UPDATE/DELETE to the API role; it records debt without writing expense or cash transactions. Shared fields/validation/scanning/DTO formatting preserve receivable behavior, and each resource retains concrete scoped SQL.
+
+Apply 00011 explicitly before deploying payable routes. Rollback locks payables in ACCESS EXCLUSIVE mode and refuses populated storage; empty rollback drops only payables/indexes with RESTRICT, retaining every earlier domain and atomic Goose history. Never remove production debt to force rollback. No dependency or configuration setting is introduced. Payment allocations, settlements, outstanding totals, corrections, and overdue rules remain separate increments.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00011_create_payables.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00012_create_receivable_allocations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

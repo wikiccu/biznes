@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -353,7 +353,40 @@ A native organization/key constraint protects concurrent requests across replica
 
 Lists accept only `page` (1–10000) and `limit` (1–100), defaulting to 1/20, and order by `created_at, id`, rather than due date. Filters, duplicate/unknown/empty query values, bare `?`, and request bodies are rejected under the shared query contract; malformed page/limit values use `400` and parsed out-of-range values use `422`. Single GET accepts an empty body and no query string. No count query is added. PUT/PATCH/DELETE, payment, reversal, and settlement routes are not implemented.
 
-A receivable records an amount owed. Creation never inserts income, changes recorded account activity, or asserts cash collection; there is no account/category link or double recognition. Payment allocations, outstanding totals, payable records, corrections, overdue/aging calculations, business timezone preferences, and reminders follow in separate increments. Overdue cutoffs must use an explicit business timezone when implemented; this step does not guess one. Storage or permission failures return safe `503`, including missing migration 00010. No dependency or configuration setting is introduced.
+A receivable records an amount owed. Creation never inserts income, changes recorded account activity, or asserts cash collection; there is no account/category link or double recognition. Payment allocations, outstanding totals, corrections, overdue/aging calculations, business timezone preferences, and reminders follow in separate increments. Overdue cutoffs must use an explicit business timezone when implemented; this step does not guess one. Storage or permission failures return safe `503`, including missing migration 00010. No dependency or configuration setting is introduced.
+
+## Payables
+
+Apply [migration 00011](../migrations/00011_create_payables.sql) explicitly before using these bearer-authenticated organization routes:
+
+| Route | Behavior |
+| --- | --- |
+| `POST /api/v1/organizations/:organization_id/payables` | Record an immutable obligation owed to a supplier; return `201`, or `200` for a matching retry, with its retrieval `Location`. |
+| `GET /api/v1/organizations/:organization_id/payables` | List that organization's original payables using bounded `page`/`limit`. |
+| `GET /api/v1/organizations/:organization_id/payables/:payable_id` | Retrieve one original payable in the selected organization. |
+
+POST uses the [receivable field and validation contract](#receivables): required canonical UUID `idempotency_key` / `contact_id`, canonical positive whole-Rial decimal-string `amount` through `"9223372036854775807"`, required exact `currency: "IRR"`, required Gregorian `due_date: "YYYY-MM-DD"` within years 0001–9999, and optional exact `description` (at most 2000 code points, LF/CR/tab permitted). The same strict UTF-8/string-only JSON/media rules, 8 KiB body cap, and prohibition on POST query strings apply. Due dates persist as native DATE, without timestamp or timezone conversion.
+
+The selected contact must currently be `supplier` or `both` for a new record. An accessible customer-only contact returns `422` with `contact_id` / `invalid_kind`; unknown/out-of-scope contacts return generic `404`, even when the caller belongs to both organizations. A transaction-held contact lock serializes creation eligibility with classification edits. Later contact reclassification leaves stored obligations and matching retries valid. No contact metadata is copied.
+
+```json
+{
+  "idempotency_key": "563dfc82-2f11-4f1d-a6f6-a99f9aa5bd49",
+  "contact_id": "272aa668-3b12-4ec1-b5dc-40a9216ee2b2",
+  "amount": "85000000",
+  "currency": "IRR",
+  "due_date": "2026-11-15",
+  "description": "Supplier invoice amount owed"
+}
+```
+
+Owner/admin/accountant members can record or retry; every current member reads. Staff receive `403` for creation/retries. Writes/lists lock membership through completion, and a single read joins membership. Unknown/inaccessible organization/resource references share `404`. Path UUID failures use `400`; missing/invalid sessions use `401`. Field errors use `422` with the same required/format/range codes as receivables. Dependency failures and denied permissions use safe `503`, including missing migration 00011. Native SQL work has a five-second/request-cancellation deadline and responses use `Cache-Control: no-store`.
+
+Responses contain `data.id`, `organization_id`, `idempotency_key`, `contact_id`, exact decimal-string `amount`, `currency`, date-only `due_date`, exact `description`, authenticated `created_by`, and server UTC `created_at`. Matching contact/amount/currency/due-date/description retries return the first record, creator, and creation time across replicas/restarts; changed payloads using that key return `409`. Payable keys have an independent namespace from receivables, transactions, and reversals, including identical UUIDs within one organization. A matching retry remains valid after the contact becomes customer-only, while a new key still requires supplier/both. Retry the same payload/key after uncertain commit completion.
+
+Lists default to page 1/limit 20, accept only bounded page (1–10000) and limit (1–100), order by `created_at, id`, and return the usual array plus `meta.page`/`meta.limit` without a count. Out-of-range numeric values use `422`; malformed/unknown/duplicate/empty query values, bare `?`, and bodies use `400`. Single GET accepts no query string and an empty body. Existing receivable response shapes, ordering, validation, and permissions stay intact.
+
+A payable records an amount owed to a supplier. Creation does not record an expense, make a cash payment, or alter account activity; there is no account/category link. Update/delete, payment, settlement, correction, mutable status, outstanding balance, and overdue/aging routes remain planned. Payment allocation must refer to established financial records without duplicate recognition. No dependency or configuration setting is introduced.
 
 ## Pagination
 

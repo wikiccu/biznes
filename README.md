@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 2 — Money Owed & Obligations.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, cash/bank accounts, exact IRR transaction recording, linked full reversals, and per-account recorded net activity with account/occurred-period filters and membership/role authorization. Phase 2 now records tenant-scoped customer receivables with exact IRR amounts, date-only due dates, provenance, and persistent retry identity. Opening/current cash balances and further correction/payment workflows remain planned. Hosted validation status is available in GitHub Actions.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, cash/bank accounts, exact IRR transaction recording, linked full reversals, and per-account recorded net activity with account/occurred-period filters and membership/role authorization. Phase 2 now records tenant-scoped customer receivables and supplier payables with exact IRR amounts, date-only due dates, provenance, and persistent retry identity. Opening/current cash balances and further correction/payment workflows remain planned. Hosted validation status is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,7 +81,7 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, organization-owned contacts, transaction categories, financial accounts, immutable API transaction records, linked full reversals, and immutable customer receivables. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, organization-owned contacts, transaction categories, financial accounts, immutable API transaction records, linked full reversals, immutable customer receivables, and supplier payables. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### User persistence
 
@@ -258,6 +258,12 @@ Send required canonical UUID `idempotency_key` / `contact_id`, positive decimal-
 
 Receivables retain creator/server creation history and expose no update/delete, payment, or status route. They record obligations without creating income or changing account activity. Settlements, outstanding totals, overdue/aging calculations, and corrections remain planned. See [the full contract](docs/API_CONVENTIONS.md#receivables).
 
+### Payables
+
+Apply [migration 00011](migrations/00011_create_payables.sql) before using `/api/v1/organizations/:organization_id/payables`. POST records an obligation owed to a current supplier/both contact; GET lists records with page/limit and GET `/:payable_id` retrieves one. Owner/admin/accountant members can record or retry; every member reads. Tenant scope, contact classification locks, exact IRR amounts, date-only due dates, description bounds, and safe input/errors follow the receivable conventions.
+
+Send the same required UUID key/contact, positive decimal-string amount, explicit IRR currency, Gregorian due date, and optional description fields. Matching retries preserve the original creator/time across replicas/restarts, including after contact reclassification; changed payloads conflict. Payable keys are independent of receivable and transaction keys. Stored debt remains separate from expense/cash payment and account activity. Payments, allocations, outstanding/overdue calculations, and corrections follow separately. See [the full contract](docs/API_CONVENTIONS.md#payables).
+
 ## Useful commands
 
 [dev.ps1](dev.ps1) provides a single entry point using [PowerShell 7 or newer](https://learn.microsoft.com/powershell/scripting/install/installing-powershell). Run it from the repository root, or use its absolute path from another directory; commands run in the repository and restore the caller's directory. Go commands require Go on `PATH`; database commands require Docker Compose and its running Linux engine. No Make, Task, standalone migration CLI, or additional linter is required.
@@ -324,4 +330,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Phase 2 next adds tenant-scoped payables linked to supplier/both contacts, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Record exact IRR obligations, date-only due dates, creator provenance, and persistent retry identity. Keep amounts owed separate from expense/cash payments; payment allocation and outstanding calculations follow separately.
+Phase 2 next introduces receivable collection allocations against established income transactions, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Define partial-payment limits, scoped retry identity, reversal handling, and exact outstanding totals without recording income/cash twice. Supplier payment allocations follow separately.

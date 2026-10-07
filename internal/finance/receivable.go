@@ -10,19 +10,22 @@ import (
 	"github.com/wikiccu/biznes/internal/organization"
 )
 
-type Receivable struct {
+type Debt struct {
 	ID, OrganizationID, IdempotencyKey, ContactID, Currency, Description, CreatedBy string
 	Amount                                                                          int64
 	DueDate, CreatedAt                                                              time.Time
 }
 
-type ReceivableInput struct {
+type DebtInput struct {
 	IdempotencyKey, ContactID, Amount, Currency, DueDate, Description string
 }
 
+type Receivable = Debt
+type ReceivableInput = DebtInput
+
 var ErrReceivableConflict = errors.New("receivable idempotency key already used with different input")
 
-func validateReceivable(input ReceivableInput) (int64, time.Time, error) {
+func validateDebt(input DebtInput) (int64, time.Time, error) {
 	var fields []FieldError
 	for _, field := range []struct{ name, value string }{
 		{"idempotency_key", input.IdempotencyKey}, {"contact_id", input.ContactID},
@@ -57,15 +60,15 @@ func validateReceivable(input ReceivableInput) (int64, time.Time, error) {
 	return amount, dueDate, nil
 }
 
-func scanReceivable(row pgx.Row) (Receivable, error) {
-	var item Receivable
+func scanDebt(row pgx.Row) (Debt, error) {
+	var item Debt
 	err := row.Scan(&item.ID, &item.OrganizationID, &item.IdempotencyKey, &item.ContactID,
 		&item.Amount, &item.Currency, &item.DueDate, &item.Description, &item.CreatedBy, &item.CreatedAt)
 	return item, err
 }
 
 func (s *Service) RecordReceivable(ctx context.Context, userID, organizationID string, input ReceivableInput) (Receivable, bool, error) {
-	amount, dueDate, err := validateReceivable(input)
+	amount, dueDate, err := validateDebt(input)
 	if err != nil {
 		return Receivable{}, false, err
 	}
@@ -92,7 +95,7 @@ func (s *Service) RecordReceivable(ctx context.Context, userID, organizationID s
 	if err != nil {
 		return Receivable{}, false, ErrUnavailable
 	}
-	item, err := scanReceivable(tx.QueryRow(ctx, `INSERT INTO biznes.receivables
+	item, err := scanDebt(tx.QueryRow(ctx, `INSERT INTO biznes.receivables
 		(organization_id, idempotency_key, contact_id, amount, currency, due_date, description, created_by)
 		SELECT $1, $2, $3, $4, $5, $6, $7, $8 WHERE $9::text IN ('customer', 'both')
 		ON CONFLICT (organization_id, idempotency_key) DO NOTHING
@@ -101,7 +104,7 @@ func (s *Service) RecordReceivable(ctx context.Context, userID, organizationID s
 	created := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A fresh statement sees a concurrent winner, even after the contact's classification changes.
-		item, err = scanReceivable(tx.QueryRow(ctx, `SELECT id, organization_id, idempotency_key, contact_id,
+		item, err = scanDebt(tx.QueryRow(ctx, `SELECT id, organization_id, idempotency_key, contact_id,
 			amount, currency, due_date, description, created_by, created_at
 			FROM biznes.receivables WHERE organization_id = $1 AND idempotency_key = $2`, organizationID, input.IdempotencyKey))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -128,7 +131,7 @@ func (s *Service) RecordReceivable(ctx context.Context, userID, organizationID s
 func (s *Service) GetReceivable(ctx context.Context, userID, organizationID, receivableID string) (Receivable, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	item, err := scanReceivable(s.pool.QueryRow(ctx, `SELECT r.id, r.organization_id, r.idempotency_key, r.contact_id,
+	item, err := scanDebt(s.pool.QueryRow(ctx, `SELECT r.id, r.organization_id, r.idempotency_key, r.contact_id,
 		r.amount, r.currency, r.due_date, r.description, r.created_by, r.created_at
 		FROM biznes.receivables r JOIN biznes.memberships m ON m.organization_id = r.organization_id
 		WHERE r.organization_id = $1 AND r.id = $2 AND m.user_id = $3`, organizationID, receivableID, userID))
@@ -165,7 +168,7 @@ func (s *Service) ListReceivables(ctx context.Context, userID, organizationID st
 	defer rows.Close()
 	items := make([]Receivable, 0)
 	for rows.Next() {
-		item, err := scanReceivable(rows)
+		item, err := scanDebt(rows)
 		if err != nil {
 			return nil, ErrUnavailable
 		}
