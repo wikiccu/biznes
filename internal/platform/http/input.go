@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -111,23 +112,35 @@ func validUnicodeEscapes(body []byte) bool {
 	return true
 }
 
-func paginationInput(c *gin.Context) (int, int, bool) {
+func queryInput(c *gin.Context, allowed ...string) (url.Values, bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 0)
 	if _, err := io.ReadAll(c.Request.Body); err != nil {
 		WriteError(c, http.StatusBadRequest, "invalid_request", "This endpoint requires an empty request body.")
-		return 0, 0, false
+		return nil, false
 	}
 	query, err := url.ParseQuery(c.Request.URL.RawQuery)
 	if err != nil || c.Request.URL.ForceQuery {
-		WriteError(c, http.StatusBadRequest, "invalid_request", "Provide valid pagination parameters.")
-		return 0, 0, false
+		WriteError(c, http.StatusBadRequest, "invalid_request", "Provide valid query parameters.")
+		return nil, false
 	}
-	for key := range query {
-		if key != "page" && key != "limit" {
-			WriteError(c, http.StatusBadRequest, "invalid_request", "Only page and limit query parameters are accepted.")
-			return 0, 0, false
+	for key, values := range query {
+		if !slices.Contains(allowed, key) || len(values) != 1 || values[0] == "" {
+			WriteError(c, http.StatusBadRequest, "invalid_request", "Provide one non-empty value per supported query parameter.")
+			return nil, false
 		}
 	}
+	return query, true
+}
+
+func paginationInput(c *gin.Context) (int, int, bool) {
+	query, ok := queryInput(c, "page", "limit")
+	if !ok {
+		return 0, 0, false
+	}
+	return paginationValues(c, query)
+}
+
+func paginationValues(c *gin.Context, query url.Values) (int, int, bool) {
 	page, limit := 1, 20
 	for _, field := range []struct {
 		name  string
@@ -136,10 +149,6 @@ func paginationInput(c *gin.Context) (int, int, bool) {
 		values, present := query[field.name]
 		if !present {
 			continue
-		}
-		if len(values) != 1 || values[0] == "" {
-			WriteError(c, http.StatusBadRequest, "invalid_request", "Provide one decimal value per pagination parameter.")
-			return 0, 0, false
 		}
 		for _, char := range values[0] {
 			if char < '0' || char > '9' {

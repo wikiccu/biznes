@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 1 — Business Core MVP.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, cash/bank accounts, exact IRR transaction recording, linked full reversals, and per-account recorded net activity with membership/role authorization. Opening/current cash balances and further correction workflows remain planned. Hosted validation status is available in GitHub Actions.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, cash/bank accounts, exact IRR transaction recording, linked full reversals, and per-account recorded net activity with account/occurred-period filters and membership/role authorization. Opening/current cash balances and further correction workflows remain planned. Hosted validation status is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -148,6 +148,10 @@ Apply [migration 00008](migrations/00008_create_transactions.sql) before using `
 
 Native tenant-scoped uniqueness makes identical retries return the same record (`200` instead of first-create `201`) across replicas and restarts; changed input with that key returns `409`. Generate a new key for each intended activity and reuse it after an uncertain response. Records retain their creator and creation instant, with no edit/delete route or mutable balance column. Linked full reversals and recorded account activity are implemented below; transfers, opening amounts, replacement workflows, and complete cash balances follow separately. See [the endpoint contract](docs/API_CONVENTIONS.md#incomeexpense-transactions) for exact bounds, validation, and retry semantics.
 
+### Transaction history filters
+
+Transaction collection GET accepts `page`/`limit`, optional `account_id`, and optional paired `from`/`to` instants. The account must belong to the selected organization; unknown/inaccessible filters return `404`. The interval selects original `occurred_at` values with inclusive `from` and exclusive `to`, before stable pagination. Supply both bounds with `from < to`, using the same strict RFC 3339/microsecond/UTC-year rules as recording. Unknown/duplicate/empty query values are rejected. Omitting filters preserves the original all-time history, including reversed originals and their unchanged DTOs. See [the shared filter contract](docs/API_CONVENTIONS.md#transaction-history-and-period-filters).
+
 ### Transaction reversals
 
 Apply [migration 00009](migrations/00009_create_transaction_reversals.sql) before using `/api/v1/organizations/:organization_id/transactions/:transaction_id/reversal`. `POST` adds the transaction's single full reversal; `GET` retrieves it. Send only a required canonical UUID `idempotency_key` and `reason` string. Owner/admin/accountant members can reverse; every member can read. Reasons are trimmed, contain 1–2000 Unicode code points, and reject controls. Both the transaction and reversal remain immutable through the API, preserving their separate creator/time history.
@@ -156,9 +160,9 @@ Identical key/transaction/trimmed-reason retries return the original reversal wi
 
 ### Recorded account activity
 
-`GET /api/v1/organizations/:organization_id/financial-accounts/:account_id/recorded-activity` returns the account's recorded income, expense, and net amounts in `IRR`. Every current member can read; unknown/inaccessible accounts return `404`. Send an empty body and no query parameters. The operation uses the existing schema through migration 00009, with no new migration, dependency, or setting.
+`GET /api/v1/organizations/:organization_id/financial-accounts/:account_id/recorded-activity` returns the account's recorded income, expense, and net amounts in `IRR`. Every current member can read; unknown/inaccessible accounts return `404`. Send an empty body, optionally with the same paired `from`/`to` period filters. Account identity stays in the path. The operation uses the existing schema through migration 00009, with no new migration, dependency, or setting.
 
-Amounts are exact decimal strings, including totals beyond signed 64-bit range; net can be negative. One database snapshot sums unreversed originals in the selected organization/account/currency and computes income minus expense. An empty or fully reversed account returns `"0"` totals. The response labels its `basis` as `"recorded_transactions"` and sets `opening_balance_included` to `false`. It includes all stored occurred dates, including future dates; there is no period filter yet. Opening amounts, transfers, and complete imported history are not established, so recorded net does not establish the actual cash/bank balance. Originals and retry history remain unchanged. See [the contract](docs/API_CONVENTIONS.md#recorded-account-activity).
+Amounts are exact decimal strings, including totals beyond signed 64-bit range; net can be negative. One database snapshot sums unreversed originals in the selected organization/account/currency and computes income minus expense. An empty or fully reversed account returns `"0"` totals. The response labels its `basis` as `"recorded_transactions"` and sets `opening_balance_included` to `false`. Without bounds it includes all stored occurred dates, including future dates. With bounds it includes only originals in `[from, to)` and echoes those normalized UTC instants. A later reversal still removes the original from its original period; history retains the audit record. Separate list/total requests use separate snapshots. Opening amounts, transfers, and complete imported history are not established, so recorded net does not establish the actual cash/bank balance. Originals and retry history remain unchanged. See [the contract](docs/API_CONVENTIONS.md#recorded-account-activity).
 
 ### Configuration
 
@@ -312,4 +316,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Add bounded account and occurred-time filters to transaction history and recorded activity, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap), so selected periods can be reconciled. Preserve exact money, full-void recognition, tenant isolation, and consistent snapshot semantics.
+Begin Phase 2 with tenant-scoped receivables linked to customer contacts, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Record exact IRR obligations and due dates with provenance and retry identity, keeping money owed separate from cash collection.

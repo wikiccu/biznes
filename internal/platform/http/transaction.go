@@ -86,12 +86,17 @@ func listTransactions(service *finance.Service) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		page, limit, ok := paginationInput(c)
+		query, ok := queryInput(c, "page", "limit", "account_id", "from", "to")
+		if !ok {
+			return
+		}
+		page, limit, ok := paginationValues(c, query)
 		if !ok {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		items, err := service.ListTransactions(c.Request.Context(), user.ID, organizationID, page, limit)
+		items, err := service.ListTransactions(c.Request.Context(), user.ID, organizationID, page, limit,
+			finance.TransactionFilter{AccountID: query.Get("account_id"), From: query.Get("from"), To: query.Get("to")})
 		if err != nil {
 			writeFinanceError(c, err)
 			return

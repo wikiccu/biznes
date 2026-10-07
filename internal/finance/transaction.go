@@ -25,12 +25,52 @@ type TransactionInput struct {
 	IdempotencyKey, AccountID, CategoryID, Amount, Currency, OccurredAt, Description string
 }
 
+type TransactionFilter struct{ AccountID, From, To string }
+
 var (
 	ErrTransactionConflict = errors.New("transaction idempotency key already used with different input")
 	transactionUUID        = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	transactionAmount      = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
 	transactionTime        = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$`)
 )
+
+func parseTransactionTime(value string) (time.Time, bool) {
+	instant, err := time.Parse(time.RFC3339Nano, value)
+	instant = instant.UTC()
+	return instant, err == nil && transactionTime.MatchString(value) && instant.Year() >= 1 && instant.Year() <= 9999
+}
+
+func validateTransactionFilter(input TransactionFilter) (*time.Time, *time.Time, error) {
+	var fields []FieldError
+	if input.AccountID != "" && !transactionUUID.MatchString(input.AccountID) {
+		fields = append(fields, FieldError{"account_id", "invalid_format"})
+	}
+	var from, to *time.Time
+	if input.From != "" || input.To != "" {
+		for _, bound := range []struct {
+			name, value string
+			target      **time.Time
+		}{{"from", input.From, &from}, {"to", input.To, &to}} {
+			if bound.value == "" {
+				fields = append(fields, FieldError{bound.name, "required"})
+				continue
+			}
+			instant, valid := parseTransactionTime(bound.value)
+			if !valid {
+				fields = append(fields, FieldError{bound.name, "invalid_format"})
+				continue
+			}
+			*bound.target = &instant
+		}
+		if from != nil && to != nil && !from.Before(*to) {
+			fields = append(fields, FieldError{"to", "out_of_range"})
+		}
+	}
+	if len(fields) != 0 {
+		return nil, nil, &ValidationError{fields}
+	}
+	return from, to, nil
+}
 
 func validateTransaction(input TransactionInput) (int64, time.Time, error) {
 	var fields []FieldError
@@ -57,12 +97,11 @@ func validateTransaction(input TransactionInput) (int64, time.Time, error) {
 	} else if input.Currency != "IRR" {
 		fields = append(fields, FieldError{"currency", "invalid_format"})
 	}
-	occurredAt, err := time.Parse(time.RFC3339Nano, input.OccurredAt)
-	occurredAt = occurredAt.UTC()
+	occurredAt, validTime := parseTransactionTime(input.OccurredAt)
 	switch {
 	case input.OccurredAt == "":
 		fields = append(fields, FieldError{"occurred_at", "required"})
-	case err != nil || !transactionTime.MatchString(input.OccurredAt) || occurredAt.Year() < 1 || occurredAt.Year() > 9999:
+	case !validTime:
 		fields = append(fields, FieldError{"occurred_at", "invalid_format"})
 	}
 	if !utf8.ValidString(input.Description) || strings.ContainsFunc(input.Description, func(r rune) bool {
@@ -156,9 +195,13 @@ func (s *Service) GetTransaction(ctx context.Context, userID, organizationID, tr
 	return item, nil
 }
 
-func (s *Service) ListTransactions(ctx context.Context, userID, organizationID string, page, limit int) ([]Transaction, error) {
+func (s *Service) ListTransactions(ctx context.Context, userID, organizationID string, page, limit int, input TransactionFilter) ([]Transaction, error) {
 	if page < 1 || page > 10000 || limit < 1 || limit > 100 {
 		return nil, ErrUnavailable
+	}
+	from, to, err := validateTransactionFilter(input)
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -170,10 +213,23 @@ func (s *Service) ListTransactions(ctx context.Context, userID, organizationID s
 	if _, err := organization.LockMembership(ctx, tx, userID, organizationID); err != nil {
 		return nil, err
 	}
+	if input.AccountID != "" {
+		var id string
+		err := tx.QueryRow(ctx, `SELECT id FROM biznes.financial_accounts WHERE organization_id = $1 AND id = $2`, organizationID, input.AccountID).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, organization.ErrNotFound
+		}
+		if err != nil {
+			return nil, ErrUnavailable
+		}
+	}
 	rows, err := tx.Query(ctx, `SELECT id, organization_id, idempotency_key, account_id, category_id,
 		kind, amount, currency, occurred_at, description, created_by, created_at
-		FROM biznes.transactions WHERE organization_id = $1 ORDER BY created_at, id LIMIT $2 OFFSET $3`,
-		organizationID, limit, (page-1)*limit)
+		FROM biznes.transactions WHERE organization_id = $1
+			AND (NULLIF($4, '')::uuid IS NULL OR account_id = NULLIF($4, '')::uuid)
+			AND ($5::timestamptz IS NULL OR occurred_at >= $5)
+			AND ($6::timestamptz IS NULL OR occurred_at < $6)
+		ORDER BY created_at, id LIMIT $2 OFFSET $3`, organizationID, limit, (page-1)*limit, input.AccountID, from, to)
 	if err != nil {
 		return nil, ErrUnavailable
 	}

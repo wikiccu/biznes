@@ -20,14 +20,16 @@ type publicAccount struct {
 }
 
 type publicAccountActivity struct {
-	OrganizationID         string `json:"organization_id"`
-	AccountID              string `json:"account_id"`
-	Currency               string `json:"currency"`
-	IncomeAmount           string `json:"income_amount"`
-	ExpenseAmount          string `json:"expense_amount"`
-	NetAmount              string `json:"net_amount"`
-	Basis                  string `json:"basis"`
-	OpeningBalanceIncluded bool   `json:"opening_balance_included"`
+	OrganizationID         string     `json:"organization_id"`
+	AccountID              string     `json:"account_id"`
+	Currency               string     `json:"currency"`
+	IncomeAmount           string     `json:"income_amount"`
+	ExpenseAmount          string     `json:"expense_amount"`
+	NetAmount              string     `json:"net_amount"`
+	Basis                  string     `json:"basis"`
+	OpeningBalanceIncluded bool       `json:"opening_balance_included"`
+	From                   *time.Time `json:"from,omitempty"`
+	To                     *time.Time `json:"to,omitempty"`
 }
 
 func accountDTO(item finance.Account) publicAccount {
@@ -108,8 +110,13 @@ func getAccountActivity(service *finance.Service) gin.HandlerFunc {
 		if !ok {
 			return
 		}
+		query, ok := queryInput(c, "from", "to")
+		if !ok {
+			return
+		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetAccountActivity(c.Request.Context(), user.ID, organizationID, id)
+		item, err := service.GetAccountActivity(c.Request.Context(), user.ID, organizationID,
+			finance.TransactionFilter{AccountID: id, From: query.Get("from"), To: query.Get("to")})
 		if err != nil {
 			writeFinanceError(c, err)
 			return
@@ -119,6 +126,7 @@ func getAccountActivity(service *finance.Service) gin.HandlerFunc {
 			OrganizationID: item.OrganizationID, AccountID: item.AccountID, Currency: item.Currency,
 			IncomeAmount: item.IncomeAmount, ExpenseAmount: item.ExpenseAmount, NetAmount: item.NetAmount,
 			Basis: "recorded_transactions", OpeningBalanceIncluded: false,
+			From: item.From, To: item.To,
 		}})
 	}
 }
