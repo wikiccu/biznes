@@ -69,6 +69,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	transactions.GET("/:transaction_id", emptyAuthRequest, getTransaction(financeService))
 	transactions.POST("/:transaction_id/reversal", reverseTransaction(financeService))
 	transactions.GET("/:transaction_id/reversal", emptyAuthRequest, getReversal(financeService))
+	receivables := organizations.Group("/:organization_id/receivables")
+	receivables.POST("", recordReceivable(financeService))
+	receivables.GET("", listReceivables(financeService))
+	receivables.GET("/:receivable_id", emptyAuthRequest, getReceivable(financeService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

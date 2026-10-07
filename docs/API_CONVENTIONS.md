@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -310,6 +310,50 @@ Income and expense sum their matching original kinds; net is income minus expens
 Amounts, membership, account, originals, and reversal exclusions use one [PostgreSQL statement snapshot](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED). Uncommitted changes are excluded; a later request after commit reflects the committed record/reversal, while separate requests may see different snapshots. GET uses a membership join like other single reads; already authorized operations may finish before later revocation completes. There is no separately cached balance, read-triggered financial mutation, or update/delete route. Computation reads the account's indexed records on demand with a five-second/request-cancellation deadline; a rollup is deferred until measured latency justifies it.
 
 GET accepts an empty body and optional paired `from`/`to` as specified above; page/limit, currency, account, and identity query overrides are rejected. Structural violations use `400 invalid_request`; semantic filter errors use `422`, and malformed canonical path UUIDs use the shared `400` guard. Missing/invalid bearer sessions use `401`. Unsupported methods, including `HEAD`/`OPTIONS`, return shared `405` with `Allow: GET`. Responses use `Cache-Control: no-store` and safe errors; amounts, credentials, raw SQL/dependency errors, and raw paths are omitted from application logs. Dependency failures, denied SELECT permissions, and missing transaction/reversal schema return safe `503` rather than fabricated zero totals. Apply existing migrations through `00009` before deployment. No new migration, dependency, or configuration is added; financial SELECT permissions plus existing identity/session/membership permissions suffice, with no transaction/reversal INSERT/UPDATE/DELETE needed for this read.
+
+## Receivables
+
+Apply `00010_create_receivables.sql` explicitly before using these bearer-authenticated organization routes:
+
+| Route | Behavior |
+| --- | --- |
+| `POST /api/v1/organizations/:organization_id/receivables` | Record an immutable obligation owed by a customer; return `201`, or `200` for a matching retry, with its retrieval `Location`. |
+| `GET /api/v1/organizations/:organization_id/receivables` | List that organization's original receivables using bounded `page`/`limit`. |
+| `GET /api/v1/organizations/:organization_id/receivables/:receivable_id` | Retrieve one original receivable in the selected organization. |
+
+Owner/admin/accountant members can record or retry; every current member can read. Writes and lists hold current membership through transaction completion; a single read joins membership. Unknown organizations/resources and inaccessible references return the same safe `404`, including when the caller belongs to the reference's actual organization. Staff receive `403` for creation/retries. Canonical path UUID guards, active bearer sessions, safe errors, `Cache-Control: no-store`, and five-second/request-cancellation deadlines follow existing finance conventions.
+
+POST accepts only one strict UTF-8 JSON object, with the existing 8 KiB cap, no query string, and these string fields:
+
+| Field | Contract |
+| --- | --- |
+| `idempotency_key` | Required canonical lowercase UUID; unique within organization and the receivable operation. |
+| `contact_id` | Required canonical lowercase UUID identifying a contact in the selected organization. New records require current `customer` or `both` kind. |
+| `amount` | Required canonical positive whole-Rial decimal string, from `"1"` through `"9223372036854775807"`. No signs, leading zeros, whitespace, fractional/scientific notation, or Persian digits. |
+| `currency` | Required exact `"IRR"`; whole Rial with scale zero. Toman remains a presentation denomination. |
+| `due_date` | Required Gregorian date string `YYYY-MM-DD`, within years 0001–9999, with a valid calendar day. No timestamp, offset, trimming, Jalali string, or timezone conversion. |
+| `description` | Optional; omitted means `""`. Preserve whitespace and Unicode, at most 2000 code points; LF/CR/tab are allowed, other controls are rejected. |
+
+Missing required values return `422` with `required`; malformed values use `invalid_format`, and zero/overflow amounts or overlong descriptions use `out_of_range`. An accessible supplier-only contact uses `422` with `contact_id` / `invalid_kind` for a new key. Contact classification is locked while checking creation eligibility and committing. The restricted composite contact FK enforces tenant ownership; classification is checked by application logic so later contact reclassification remains allowed. No contact name, address, or classification snapshot is copied into the financial record.
+
+```json
+{
+  "idempotency_key": "9ae229af-b4db-4d4a-a7cc-9d7edc3a3d2e",
+  "contact_id": "c8e44866-d8ed-4d97-bd86-80dc13a662d3",
+  "amount": "85000000",
+  "currency": "IRR",
+  "due_date": "2026-10-31",
+  "description": "Invoice amount owed"
+}
+```
+
+Successful single-resource responses contain `data.id`, `organization_id`, `idempotency_key`, `contact_id`, decimal-string `amount`, `currency`, date-only `due_date`, exact `description`, authenticated `created_by`, and database-default UTC `created_at`. There is no `updated_at`, mutable status, overdue flag, paid amount, or outstanding balance. PostgreSQL DATE stores the due calendar day without turning it into midnight in a guessed business timezone.
+
+A native organization/key constraint protects concurrent requests across replicas and restarts. Matching contact/amount/currency/due-date/exact-description input returns the first record, preserving its ID, creator, and creation time even when another authorized writer retries. A changed payload using that key returns `409`; other operation namespaces may reuse the same UUID. A matching retry remains valid after the linked contact changes to supplier-only, while a new key still requires customer/both. Unknown/inaccessible contact references remain `404`. After a timeout or lost response, retry the same payload/key because commit completion may be uncertain.
+
+Lists accept only `page` (1–10000) and `limit` (1–100), defaulting to 1/20, and order by `created_at, id`, rather than due date. Filters, duplicate/unknown/empty query values, bare `?`, and request bodies are rejected under the shared query contract; malformed page/limit values use `400` and parsed out-of-range values use `422`. Single GET accepts an empty body and no query string. No count query is added. PUT/PATCH/DELETE, payment, reversal, and settlement routes are not implemented.
+
+A receivable records an amount owed. Creation never inserts income, changes recorded account activity, or asserts cash collection; there is no account/category link or double recognition. Payment allocations, outstanding totals, payable records, corrections, overdue/aging calculations, business timezone preferences, and reminders follow in separate increments. Overdue cutoffs must use an explicit business timezone when implemented; this step does not guess one. Storage or permission failures return safe `503`, including missing migration 00010. No dependency or configuration setting is introduced.
 
 ## Pagination
 

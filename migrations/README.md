@@ -104,9 +104,19 @@ The API needs transaction_reversals SELECT/INSERT, transactions SELECT, and exis
 
 Rollback locks reversals and refuses populated storage. Empty rollback drops only reversals/indexes with `RESTRICT`, preserving original transactions, every prior domain's data, and migration history. No prior migration is modified. Never delete production reversal/original records to make rollback succeed; use a deliberate corrective migration.
 
+## Receivables
+
+`00010_create_receivables.sql` introduces immutable API `biznes.receivables` with native UUID defaults, composite organization/resource keys, restricted organization/contact/creator FKs, and unique `(organization_id, idempotency_key)`. Amounts are positive BIGINT whole-Rial units with required IRR currency; `due_date` is a finite native DATE within Gregorian years 0001–9999. Description has the same 2000-character/LF/CR/tab policy as transactions. Database-default `created_at` and authenticated `created_by` preserve provenance. Indexes support stable tenant/creation-time/ID listing and contact/creator FK lookups. There is no amount arithmetic, account link, balance/status column, or updated timestamp.
+
+The composite contact FK protects organization ownership, including direct SQL writes. The application locks the selected contact for customer/both eligibility while committing a new receivable. Classification is deliberately not part of the FK: later contact edits may reclassify it, while historical receivables and matching retries remain valid. The API needs receivables SELECT/INSERT, contacts SELECT and existing contact UPDATE permissions for `FOR SHARE`, plus current identity/session/membership permissions. A narrow finance role can grant contact UPDATE on kind for the row lock; no receivable UPDATE/DELETE is needed. Native uniqueness plus a fresh winner read protects retry identity across replicas/restarts; identical payloads preserve the first creator/time and changed payloads conflict.
+
+Apply the migration explicitly before deploying receivable routes. Existing contacts/transactions/reversals remain unchanged; no prior migration, dependency, or environment setting is modified. Creating receivables never writes cash transactions or recorded account totals. Payment allocation, settlements, corrections, and overdue calculations follow separately.
+
+Rollback takes an ACCESS EXCLUSIVE lock and refuses populated receivables. Empty rollback drops only this table/indexes with RESTRICT, retaining all earlier data and Goose history. Schema changes and version recording are transactional, including failures and dependency protection. Never delete production obligations to force rollback.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00010_create_account_activity.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00011_create_payables.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

@@ -40,6 +40,32 @@ func parseTransactionTime(value string) (time.Time, bool) {
 	return instant, err == nil && transactionTime.MatchString(value) && instant.Year() >= 1 && instant.Year() <= 9999
 }
 
+func validateAmount(value string) (int64, string) {
+	amount, err := strconv.ParseInt(value, 10, 64)
+	switch {
+	case value == "":
+		return 0, "required"
+	case !transactionAmount.MatchString(value):
+		return 0, "invalid_format"
+	case err != nil || amount <= 0:
+		return 0, "out_of_range"
+	default:
+		return amount, ""
+	}
+}
+
+func validateDescription(value string) string {
+	if !utf8.ValidString(value) || strings.ContainsFunc(value, func(r rune) bool {
+		return unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t'
+	}) {
+		return "invalid_format"
+	}
+	if utf8.RuneCountInString(value) > 2000 {
+		return "out_of_range"
+	}
+	return ""
+}
+
 func validateTransactionFilter(input TransactionFilter) (*time.Time, *time.Time, error) {
 	var fields []FieldError
 	if input.AccountID != "" && !transactionUUID.MatchString(input.AccountID) {
@@ -83,14 +109,9 @@ func validateTransaction(input TransactionInput) (int64, time.Time, error) {
 			fields = append(fields, FieldError{field.name, "invalid_format"})
 		}
 	}
-	amount, err := strconv.ParseInt(input.Amount, 10, 64)
-	switch {
-	case input.Amount == "":
-		fields = append(fields, FieldError{"amount", "required"})
-	case !transactionAmount.MatchString(input.Amount):
-		fields = append(fields, FieldError{"amount", "invalid_format"})
-	case err != nil || amount <= 0:
-		fields = append(fields, FieldError{"amount", "out_of_range"})
+	amount, code := validateAmount(input.Amount)
+	if code != "" {
+		fields = append(fields, FieldError{"amount", code})
 	}
 	if input.Currency == "" {
 		fields = append(fields, FieldError{"currency", "required"})
@@ -104,12 +125,8 @@ func validateTransaction(input TransactionInput) (int64, time.Time, error) {
 	case !validTime:
 		fields = append(fields, FieldError{"occurred_at", "invalid_format"})
 	}
-	if !utf8.ValidString(input.Description) || strings.ContainsFunc(input.Description, func(r rune) bool {
-		return unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t'
-	}) {
-		fields = append(fields, FieldError{"description", "invalid_format"})
-	} else if utf8.RuneCountInString(input.Description) > 2000 {
-		fields = append(fields, FieldError{"description", "out_of_range"})
+	if code := validateDescription(input.Description); code != "" {
+		fields = append(fields, FieldError{"description", code})
 	}
 	if len(fields) != 0 {
 		return 0, time.Time{}, &ValidationError{fields}
