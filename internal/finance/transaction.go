@@ -141,6 +141,12 @@ func scanTransaction(row pgx.Row) (Transaction, error) {
 	return item, err
 }
 
+func lockTransactionRecognition(ctx context.Context, tx pgx.Tx, organizationID, transactionID string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(
+		'biznes:transaction:' || $1::uuid::text || ':' || $2::uuid::text, 0))`, organizationID, transactionID)
+	return err
+}
+
 func (s *Service) RecordTransaction(ctx context.Context, userID, organizationID string, input TransactionInput) (Transaction, bool, error) {
 	amount, occurredAt, err := validateTransaction(input)
 	if err != nil {

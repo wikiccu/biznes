@@ -71,6 +71,9 @@ func (s *Service) ReverseTransaction(ctx context.Context, userID, organizationID
 	if role != "owner" && role != "admin" && role != "accountant" {
 		return Reversal{}, false, organization.ErrForbidden
 	}
+	if lockTransactionRecognition(ctx, tx, organizationID, transactionID) != nil {
+		return Reversal{}, false, ErrUnavailable
+	}
 	item, err := scanReversal(tx.QueryRow(ctx, `INSERT INTO biznes.transaction_reversals
 		(organization_id, transaction_id, idempotency_key, reason, created_by)
 		SELECT organization_id, id, $3, $4, $5 FROM biznes.transactions WHERE organization_id = $1 AND id = $2

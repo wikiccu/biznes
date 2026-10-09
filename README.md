@@ -8,7 +8,7 @@ The initial market is Iran, with planned Persian, Toman/Rial, Jalali date, and l
 
 **Current phase: Phase 2 — Money Owed & Obligations.**
 
-The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, cash/bank accounts, exact IRR transaction recording, linked full reversals, and per-account recorded net activity with account/occurred-period filters and membership/role authorization. Phase 2 now records tenant-scoped customer receivables and supplier payables with exact IRR amounts, date-only due dates, provenance, and persistent retry identity. Opening/current cash balances and further correction/payment workflows remain planned. Hosted validation status is available in GitHub Actions.
+The product vision, architecture direction, and full roadmap are recorded in [docs/PRODUCT_BLUEPRINT.md](docs/PRODUCT_BLUEPRINT.md). Phase 0's foundation, developer commands, API conventions, and Go CI are implemented. Phase 1 implements global identity, persistent bearer sessions, organizations, scoped contacts, income/expense transaction categories, cash/bank accounts, exact IRR transaction recording, linked full reversals, and per-account recorded net activity with account/occurred-period filters and membership/role authorization. Phase 2 records tenant-scoped customer receivables and supplier payables with exact IRR amounts, date-only due dates, provenance, and persistent retry identity. Receivable allocations now link existing income receipts to obligations with partial-collection limits and exact collected/outstanding totals; full receipt voids reopen debt while preserving allocation history. Opening/current cash balances and supplier payment/correction workflows remain planned. Hosted validation status is available in GitHub Actions.
 
 The blueprint is the living source of truth. Update it whenever a significant product or architecture decision changes.
 
@@ -81,7 +81,7 @@ go run ./cmd/migrate up
 go run ./cmd/migrate status
 ```
 
-The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, organization-owned contacts, transaction categories, financial accounts, immutable API transaction records, linked full reversals, immutable customer receivables, and supplier payables. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
+The migrations create the `biznes` schema, global users, durable sessions, organizations/memberships, organization-owned contacts, transaction categories, financial accounts, immutable API transaction records, linked full reversals, immutable customer receivables, supplier payables, and receipt-linked receivable allocations. Goose tracks versions in `public.goose_db_version`. Rollbacks lock affected tables and refuse to remove stored rows; the schema rollback refuses a non-empty schema. Rollbacks remain explicit. See the workflow for flags, naming, adding migrations, permissions, failure recovery, and rollback validation.
 
 ### User persistence
 
@@ -256,7 +256,13 @@ Apply [migration 00010](migrations/00010_create_receivables.sql) before using `/
 
 Send required canonical UUID `idempotency_key` / `contact_id`, positive decimal-string `amount` through signed 64-bit maximum, explicit `currency: "IRR"`, and required Gregorian `due_date: "YYYY-MM-DD"` (years 0001–9999); an optional bounded Unicode `description` preserves whitespace. Due dates persist as native DATE, with no timestamp or guessed timezone. Matching retries return the first record across replicas/restarts, even after contact reclassification; changed payloads conflict. Contact classification is locked for new-record eligibility, and native composite FKs preserve tenant ownership.
 
-Receivables retain creator/server creation history and expose no update/delete, payment, or status route. They record obligations without creating income or changing account activity. Settlements, outstanding totals, overdue/aging calculations, and corrections remain planned. See [the full contract](docs/API_CONVENTIONS.md#receivables).
+Receivable originals retain creator/server creation history and expose no update/delete or mutable status route. Creation records obligations without inserting income or changing account activity. Receipt allocations and collection summaries are described below; overdue/aging calculations and corrections remain planned. See [the full contract](docs/API_CONVENTIONS.md#receivables).
+
+### Receivable collections
+
+Apply [migration 00012](migrations/00012_create_receivable_allocations.sql) explicitly before enabling receipt allocation routes. POST `/receivables/:receivable_id/allocations` accepts string `idempotency_key`, `transaction_id`, and `amount` fields. It links a positive portion of an existing same-organization, same-currency, unreversed income transaction to that debt. Allocation amounts cannot exceed either the receipt's unused amount across obligations or the receivable's outstanding amount. Owner/admin/accountant members record/retry; all members can list/get allocation history and GET `/receivables/:receivable_id/collection-summary` for exact decimal-string collected/outstanding totals.
+
+Matching retries preserve the first allocation's creator/time even after a receipt void; changed input conflicts. A full receipt reversal removes its allocations from recognized collections and reopens affected debt, retaining originals and allocation history. Allocations never insert another income/cash transaction. An allocation records the writer's association with an obligation; transactions do not independently verify the payer's contact. Upgrade every allocation/reversal writer together before enabling allocations, and keep privileged direct SQL within the documented locking/capacity rules. See [the API contract](docs/API_CONVENTIONS.md#receivable-collections) and [migration notes](migrations/README.md#receivable-collections).
 
 ### Payables
 
@@ -330,4 +336,4 @@ Hosted execution results are reported in GitHub Actions; workflow configuration 
 
 ## Next increment
 
-Phase 2 next introduces receivable collection allocations against established income transactions, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Define partial-payment limits, scoped retry identity, reversal handling, and exact outstanding totals without recording income/cash twice. Supplier payment allocations follow separately.
+Phase 2 next introduces supplier payment allocations against established expense transactions, as described in the [blueprint roadmap](docs/PRODUCT_BLUEPRINT.md#development-roadmap). Reuse the implemented exact allocation limits, retry identity, reversal coordination, and outstanding-total basis without recording expense/cash twice. Overdue/aging and corrections follow separately.

@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt allocations and collection summaries, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -305,7 +305,7 @@ The explicit DTO contains `organization_id`, `account_id`, account `currency`, `
 
 Income and expense sum their matching original kinds; net is income minus expense. The query constrains transactions by organization/account/currency and excludes a transaction only when a reversal matches both its organization and original ID. Full reversals remove the original's recognition rather than adding opposite-kind activity; both audit records and their recording/reversal retry identities remain untouched. PostgreSQL [`sum(bigint)` returns exact `numeric`](https://www.postgresql.org/docs/18/functions-aggregate.html), so totals and subtraction can exceed signed 64-bit limits without a BIGINT cast or binary floating-point arithmetic. The query converts those results directly to decimal text and uses zero for empty sums. Current IRR account currency and whole-Rial units stay explicit; there is no currency conversion.
 
-`basis: "recorded_transactions"` and `opening_balance_included: false` state the result's limits. Without bounds it covers all committed unreversed originals visible to the query, including backdated and future-dated records. Paired bounds select original occurred instants using the shared inclusive/exclusive filter contract; a later full reversal corrects the original period irrespective of its own creation time. No opening amount, imported-history completeness, transfer, refund movement, or reconciliation basis is established. A zero recorded net does not establish an empty bank/cash account. The result is recorded activity for all time or an explicitly selected period. It does not assert actual cash position, historical “as known then” recognition, or an authoritative as-of timestamp. Collection summaries and complete balance workflows remain planned.
+`basis: "recorded_transactions"` and `opening_balance_included: false` state the result's limits. Without bounds it covers all committed unreversed originals visible to the query, including backdated and future-dated records. Paired bounds select original occurred instants using the shared inclusive/exclusive filter contract; a later full reversal corrects the original period irrespective of its own creation time. No opening amount, imported-history completeness, transfer, refund movement, or reconciliation basis is established. A zero recorded net does not establish an empty bank/cash account. The result is recorded activity for all time or an explicitly selected period. It does not assert actual cash position, historical “as known then” recognition, or an authoritative as-of timestamp. Receivable collection summaries use the separate allocation basis below; complete cash balance workflows remain planned.
 
 Amounts, membership, account, originals, and reversal exclusions use one [PostgreSQL statement snapshot](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED). Uncommitted changes are excluded; a later request after commit reflects the committed record/reversal, while separate requests may see different snapshots. GET uses a membership join like other single reads; already authorized operations may finish before later revocation completes. There is no separately cached balance, read-triggered financial mutation, or update/delete route. Computation reads the account's indexed records on demand with a five-second/request-cancellation deadline; a rollup is deferred until measured latency justifies it.
 
@@ -351,9 +351,66 @@ Successful single-resource responses contain `data.id`, `organization_id`, `idem
 
 A native organization/key constraint protects concurrent requests across replicas and restarts. Matching contact/amount/currency/due-date/exact-description input returns the first record, preserving its ID, creator, and creation time even when another authorized writer retries. A changed payload using that key returns `409`; other operation namespaces may reuse the same UUID. A matching retry remains valid after the linked contact changes to supplier-only, while a new key still requires customer/both. Unknown/inaccessible contact references remain `404`. After a timeout or lost response, retry the same payload/key because commit completion may be uncertain.
 
-Lists accept only `page` (1–10000) and `limit` (1–100), defaulting to 1/20, and order by `created_at, id`, rather than due date. Filters, duplicate/unknown/empty query values, bare `?`, and request bodies are rejected under the shared query contract; malformed page/limit values use `400` and parsed out-of-range values use `422`. Single GET accepts an empty body and no query string. No count query is added. PUT/PATCH/DELETE, payment, reversal, and settlement routes are not implemented.
+Lists accept only `page` (1–10000) and `limit` (1–100), defaulting to 1/20, and order by `created_at, id`, rather than due date. Filters, duplicate/unknown/empty query values, bare `?`, and request bodies are rejected under the shared query contract; malformed page/limit values use `400` and parsed out-of-range values use `422`. Single GET accepts an empty body and no query string. No count query is added. Receivable originals expose no PUT/PATCH/DELETE or reversal route. Receipt allocations and their summary have separate routes below.
 
-A receivable records an amount owed. Creation never inserts income, changes recorded account activity, or asserts cash collection; there is no account/category link or double recognition. Payment allocations, outstanding totals, corrections, overdue/aging calculations, business timezone preferences, and reminders follow in separate increments. Overdue cutoffs must use an explicit business timezone when implemented; this step does not guess one. Storage or permission failures return safe `503`, including missing migration 00010. No dependency or configuration setting is introduced.
+A receivable records an amount owed. Creation never inserts income, changes recorded account activity, or asserts cash collection; there is no account/category link or double recognition. Receipt allocations and exact outstanding totals are implemented below. Corrections, overdue/aging calculations, business timezone preferences, and reminders follow separately. Overdue cutoffs must use an explicit business timezone when implemented; this step does not guess one. Storage or permission failures return safe `503`, including missing migration 00010. No dependency or configuration setting is introduced.
+
+## Receivable collections
+
+Apply [migration 00012](../migrations/00012_create_receivable_allocations.sql) before enabling these bearer-authenticated routes under `/api/v1/organizations/:organization_id/receivables/:receivable_id`:
+
+| Suffix and method | Behavior |
+| --- | --- |
+| `POST /allocations` | Allocate part of an existing income receipt; `201` for creation, `200` for an identical retry, with the allocation's retrieval `Location`. |
+| `GET /allocations` | List that receivable's immutable allocation history with bounded `page`/`limit`. |
+| `GET /allocations/:allocation_id` | Retrieve an allocation within both the selected organization and receivable. |
+| `GET /collection-summary` | Return original amount, recognized collections, and exact outstanding amount in one statement snapshot. |
+
+Current owner/admin/accountant members can allocate or retry; staff receive `403`. All members read. Writes/lists lock membership through completion; single reads/summary join membership. Unknown or inaccessible organizations, receivables, receipts, and allocations use generic `404`, including references to another organization the caller also belongs to. A list for an existing empty receivable returns `[]`; a missing receivable returns `404`. Path UUID guards use `400` and missing/invalid sessions use `401`. Responses use `Cache-Control: no-store`, safe errors, and the existing five-second/request-cancellation deadline.
+
+POST accepts one strict UTF-8 JSON object with exactly these supported string fields, the existing 8 KiB cap, supported JSON media type, and no query string:
+
+| Field | Contract |
+| --- | --- |
+| `idempotency_key` | Required canonical lowercase UUID, unique within the organization and receivable-allocation operation, across all receivables. Independent of debt/transaction/reversal keys. |
+| `transaction_id` | Required canonical lowercase UUID identifying an existing transaction in the selected organization. A new allocation requires an unreversed `income` transaction with the receivable's currency. |
+| `amount` | Required canonical positive whole-Rial decimal string through `"9223372036854775807"`, using the existing exact amount validation. |
+
+Missing values use `422 required`; invalid UUID/amount spelling uses `invalid_format`; zero/overflow amounts use `out_of_range`. Duplicate/unknown fields, wrong types, malformed Unicode/JSON and trailing values use the shared `400` parser; oversized bodies use `413` and unsupported media uses `415`. Currency, tenant, receivable, creator, and time cannot be supplied or overridden in the body.
+
+```json
+{
+  "idempotency_key": "ba8de174-95da-453f-9d40-cf81d151d0b2",
+  "transaction_id": "64f4a8b4-cb8c-4a60-aed1-302f1d998a08",
+  "amount": "25000000"
+}
+```
+
+A new allocation is limited by both the receipt's unused amount across all receivables and the selected receivable's outstanding amount. Multiple partial allocations and multiple receipts per obligation are allowed; the remainder of a receipt may stay unallocated. Ineligible/reversed receipts, exceeding either limit, and a changed payload using an existing key return safe `409 conflict`. Current contact reclassification does not prevent allocation to an existing obligation. The authenticated writer associates the receipt with that obligation; transactions do not store an independently verified payer/contact.
+
+Successful responses contain `data.id`, `organization_id`, `idempotency_key`, `receivable_id`, `transaction_id`, decimal-string `amount`, derived `currency`, authenticated `created_by`, and server UTC `created_at`. A matching receivable/receipt/amount retry returns the first allocation and provenance across replicas/restarts, even after receipt reversal or full collection. A changed key payload returns `409`. After an uncertain commit or lost response, repeat the same key/payload.
+
+A full receipt reversal excludes every allocation linked to that organization/transaction from recognized collections, reopening the affected receivables. Allocation history remains readable and identical retries remain valid, but a new key cannot allocate a reversed receipt. The void also retains the established account-activity semantics. Neither an allocation nor its summary creates another income/cash record; voiding a receipt creates no refund movement. Allocation correction/undo, partial receipt reversals, refunds, and supplier payment allocation are not implemented.
+
+Lists order by `created_at, id`, accept only existing bounded `page`/`limit` (defaults 1/20), and return `data` plus `meta.page`/`meta.limit` without a count. Raw history includes allocations linked to reversed receipts; it is not itself a collected total. Single allocation GET and collection-summary accept an empty body and no query string. There are no allocation update/delete routes or period/as-of filters.
+
+```json
+{
+  "data": {
+    "organization_id": "34023142-a6e3-46cb-ae51-0a8b607d0221",
+    "receivable_id": "92bfeab4-e572-49cf-8c21-fc4545892577",
+    "currency": "IRR",
+    "amount": "85000000",
+    "collected_amount": "25000000",
+    "outstanding_amount": "60000000",
+    "basis": "recorded_allocations"
+  }
+}
+```
+
+Summary uses PostgreSQL NUMERIC aggregates and exact decimal text: collected is the sum of unreversed allocations; outstanding is original amount minus collected. A known empty receivable has zero collected and its full original amount outstanding. Membership, obligation, allocations and reversal exclusions share one statement snapshot; separate requests may observe different commits. `basis: "recorded_allocations"` describes recorded associations, without asserting revenue, actual cash balance, verified payment identity, overdue status, or completeness of imported history. Denied permissions, missing schema, dependency failures, or an over-collected obligation caused by privileged corruption return safe `503` instead of fabricated/negative outstanding totals.
+
+Allocation writes hold transaction-level receipt recognition and then receivable advisory locks before using fresh statements for retry, eligibility, and exact capacity checks. Reversals take the same receipt lock. PostgreSQL releases these [transaction advisory locks](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS) at transaction end. They are cooperative: deploy all allocation/reversal writers together before enabling this capability. Native constraints enforce positive IRR amounts, scoped retry uniqueness, creator links, and same-tenant/currency income/debt references; aggregate capacities and current reversal eligibility are enforced by these serialized application operations. Privileged direct SQL must obey the same locking, eligibility, and capacity rules. The API needs allocation SELECT/INSERT plus existing receipt/debt/reversal reads and membership/session permissions; financial UPDATE/DELETE grants are unnecessary. There are no new dependencies or configuration settings.
 
 ## Payables
 

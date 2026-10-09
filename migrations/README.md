@@ -122,9 +122,19 @@ The application locks the selected tenant contact and requires supplier/both cla
 
 Apply 00011 explicitly before deploying payable routes. Rollback locks payables in ACCESS EXCLUSIVE mode and refuses populated storage; empty rollback drops only payables/indexes with RESTRICT, retaining every earlier domain and atomic Goose history. Never remove production debt to force rollback. No dependency or configuration setting is introduced. Payment allocations, settlements, outstanding totals, corrections, and overdue rules remain separate increments.
 
+## Receivable collections
+
+`00012_create_receivable_allocations.sql` adds immutable receipt-to-obligation links with tenant/resource keys, an independent organization/idempotency key, positive BIGINT whole-Rial amounts, derived IRR currency, authenticated creator/server time, and indexes for stable debt history, receipt capacity, and creator references. New unique reference keys on receivables (organization/id/currency) and transactions (organization/id/kind/currency) support restricted composite foreign keys. A constrained internal `transaction_kind: income` column ensures allocation receipts are income transactions with matching tenant/currency; it is not user input or a public DTO field. Applying these uniqueness constraints builds indexes and locks populated tables; schedule the explicit migration appropriately.
+
+Native constraints protect reference/row invariants. Aggregate receipt/debt capacities and current reversal eligibility are enforced by the application's fixed lock order: current membership, transaction-level receipt recognition advisory lock, then receivable advisory lock, followed by fresh READ COMMITTED statements. Receipt reversals acquire the same receipt lock. [PostgreSQL advisory locks](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS) are cooperative and transaction-scoped; direct privileged SQL must follow the same rules. Lock identifiers use `hashtextextended('biznes:transaction:' || organization_id::uuid::text || ':' || transaction_id::uuid::text, 0)` and the analogous `biznes:receivable:` prefix. All allocation/reversal writers must use this protocol before enabling allocation traffic; older reversal writers do not participate. No UPDATE grant on immutable financial tables is required.
+
+Apply 00012 explicitly, grant allocation SELECT/INSERT plus required existing debt/transaction/reversal reads, and upgrade the writers together. Financial allocations retain originals and never create duplicate income/cash. A full receipt void reopens every linked receivable through derived recognition, preserving allocation rows and retry identity. Summary rejects a privileged over-collected obligation rather than returning negative outstanding. The API exposes no allocation UPDATE/DELETE; keep those privileges away from its role. No dependency or configuration setting is added.
+
+Rollback takes an ACCESS EXCLUSIVE allocation-table lock and refuses populated history, including allocations whose receipts were voided. Empty rollback drops only allocations/indexes and the two added reference constraints, preserving earlier schema/data and atomic Goose history. Do not delete production allocations to force rollback; use a corrective migration.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00012_create_receivable_allocations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00013_create_payable_allocations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up
