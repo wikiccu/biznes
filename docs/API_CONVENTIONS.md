@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt allocations and collection summaries, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations and exact collection/payment summaries, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -390,7 +390,7 @@ A new allocation is limited by both the receipt's unused amount across all recei
 
 Successful responses contain `data.id`, `organization_id`, `idempotency_key`, `receivable_id`, `transaction_id`, decimal-string `amount`, derived `currency`, authenticated `created_by`, and server UTC `created_at`. A matching receivable/receipt/amount retry returns the first allocation and provenance across replicas/restarts, even after receipt reversal or full collection. A changed key payload returns `409`. After an uncertain commit or lost response, repeat the same key/payload.
 
-A full receipt reversal excludes every allocation linked to that organization/transaction from recognized collections, reopening the affected receivables. Allocation history remains readable and identical retries remain valid, but a new key cannot allocate a reversed receipt. The void also retains the established account-activity semantics. Neither an allocation nor its summary creates another income/cash record; voiding a receipt creates no refund movement. Allocation correction/undo, partial receipt reversals, refunds, and supplier payment allocation are not implemented.
+A full receipt reversal excludes every allocation linked to that organization/transaction from recognized collections, reopening the affected receivables. Allocation history remains readable and identical retries remain valid, but a new key cannot allocate a reversed receipt. The void also retains the established account-activity semantics. Neither an allocation nor its summary creates another income/cash record; voiding a receipt creates no refund movement. Supplier payment allocations follow the expense-linked contract below. Allocation correction/undo, partial transaction reversals, and refunds are not implemented.
 
 Lists order by `created_at, id`, accept only existing bounded `page`/`limit` (defaults 1/20), and return `data` plus `meta.page`/`meta.limit` without a count. Raw history includes allocations linked to reversed receipts; it is not itself a collected total. Single allocation GET and collection-summary accept an empty body and no query string. There are no allocation update/delete routes or period/as-of filters.
 
@@ -443,7 +443,56 @@ Responses contain `data.id`, `organization_id`, `idempotency_key`, `contact_id`,
 
 Lists default to page 1/limit 20, accept only bounded page (1–10000) and limit (1–100), order by `created_at, id`, and return the usual array plus `meta.page`/`meta.limit` without a count. Out-of-range numeric values use `422`; malformed/unknown/duplicate/empty query values, bare `?`, and bodies use `400`. Single GET accepts no query string and an empty body. Existing receivable response shapes, ordering, validation, and permissions stay intact.
 
-A payable records an amount owed to a supplier. Creation does not record an expense, make a cash payment, or alter account activity; there is no account/category link. Update/delete, payment, settlement, correction, mutable status, outstanding balance, and overdue/aging routes remain planned. Payment allocation must refer to established financial records without duplicate recognition. No dependency or configuration setting is introduced.
+A payable records an amount owed to a supplier. Creation does not record an expense, make a cash payment, or alter account activity; there is no account/category link. Original payables expose no update/delete, correction, or mutable status route. Payment allocations and exact outstanding totals are implemented below; overdue/aging remains planned. No dependency or configuration setting is introduced.
+
+## Supplier payments
+
+Apply [migration 00013](../migrations/00013_create_payable_allocations.sql) before enabling these authenticated routes under `/api/v1/organizations/:organization_id/payables/:payable_id`:
+
+| Suffix and method | Behavior |
+| --- | --- |
+| `POST /allocations` | Link part of an existing expense payment; return `201`, or `200` for an identical retry, with the allocation's retrieval `Location`. |
+| `GET /allocations` | List this payable's immutable allocation history with bounded `page`/`limit`. |
+| `GET /allocations/:allocation_id` | Retrieve an allocation in both the selected organization and payable. |
+| `GET /payment-summary` | Return original amount, recognized paid amount, and exact outstanding amount in one statement snapshot. |
+
+POST uses the [allocation input contract](#receivable-collections): required canonical lowercase UUID strings `idempotency_key` and `transaction_id`, and a canonical positive whole-Rial decimal-string `amount` through `"9223372036854775807"`. The same strict UTF-8/string-only JSON/media rules, 8 KiB body cap, no query string, `422` required/format/range details, and structural `400` errors apply. Currency, tenant, payable, creator, kind, and timestamps cannot be supplied.
+
+```json
+{
+  "idempotency_key": "c1d9a034-e963-47d1-9510-dc2b57833f08",
+  "transaction_id": "a897b6aa-c3cb-4d2f-b2ce-84f56863d38c",
+  "amount": "25000000"
+}
+```
+
+New allocations require an existing same-organization, same-currency, unreversed `expense` transaction. An income transaction, full-void payment, or amount exceeding either the payment's unused capacity across payables or the selected payable's outstanding amount returns safe `409 conflict`. Multiple partial allocations and multiple payments per payable are allowed, with unused payment remainder permitted. Current contact reclassification does not block allocation to an existing obligation. The writer associates the recorded payment with the supplier debt; the transaction does not independently verify its recipient contact.
+
+Current owner/admin/accountant members record or retry; staff receive `403`. Every current member reads. Writes/lists hold membership through completion, and single reads/summary join membership. Unknown or inaccessible organization/payable/transaction/allocation references share generic `404`, including cross-organization references when the caller belongs to both. An existing empty payable lists `[]` and has zero paid; a missing payable returns `404`. Existing path UUID guards, active bearer authentication, safe `503` errors, `Cache-Control: no-store`, and five-second/request-cancellation deadlines apply.
+
+Allocation responses contain `data.id`, `organization_id`, `idempotency_key`, `payable_id`, `transaction_id`, decimal-string `amount`, derived `currency`, authenticated `created_by`, and server UTC `created_at`. Native organization/key uniqueness spans all payables but has an independent namespace from receivable allocations and other operations. Matching payable/transaction/amount retries retain the first record and provenance across replicas/restarts, after full payment, and after transaction void. Changed input returns `409`. Retry the same key/payload after uncertain commit completion.
+
+A full expense reversal removes all of that organization/transaction's allocations from recognized paid amounts and reopens its linked payables. Immutable allocation history and identical retries remain readable/valid; new allocation keys cannot use the voided payment. Neither allocation nor summary inserts another expense/cash record, and the void creates no refund movement. Allocation correction/undo, partial reversals, and refunds remain planned.
+
+GET history uses stable `created_at, id` ordering, the existing page 1/limit 20 defaults and bounds, and `meta.page`/`meta.limit` without a count. History includes voided-payment allocations and must not be summed as the recognized paid amount. Single allocation GET and payment-summary accept an empty body and no query string. No update/delete, period/as-of filter, or mutable status route is added. Existing receivable JSON fields, validation, SQL, retry behavior, and collection recognition remain intact.
+
+```json
+{
+  "data": {
+    "organization_id": "34023142-a6e3-46cb-ae51-0a8b607d0221",
+    "payable_id": "e5e27acd-ebf4-4fae-9913-a1e3737191d3",
+    "currency": "IRR",
+    "amount": "85000000",
+    "paid_amount": "25000000",
+    "outstanding_amount": "60000000",
+    "basis": "recorded_allocations"
+  }
+}
+```
+
+Paid is the exact NUMERIC sum of unreversed payable allocations; outstanding is original debt minus paid, returned directly as decimal text. Membership, debt, allocations and reversal exclusions share one statement snapshot. Separate requests can observe different commits. `basis: "recorded_allocations"` describes recorded associations without asserting actual cash balance, completeness of imported history, verified recipient identity, overdue status, or historical recognition. Over-paid obligations caused by privileged corruption fail closed with safe `503` instead of negative outstanding.
+
+Writes reuse transaction recognition locks shared with reversals, then acquire the payable lock before fresh retry/eligibility/capacity statements. Lock identifiers use the existing `biznes:transaction:` prefix and `biznes:payable:` for the debt. Every allocation/reversal writer, including privileged direct SQL, must follow the cooperative locking and capacity rules described in [migration notes](../migrations/README.md#supplier-payments). Native constraints enforce positive IRR amounts, retry uniqueness, creator links and restricted same-tenant/currency expense/debt references. Allocation SELECT/INSERT and existing debt/transaction/reversal reads plus current session/membership permissions suffice; financial UPDATE/DELETE grants are unnecessary. No dependency or configuration setting is added.
 
 ## Pagination
 

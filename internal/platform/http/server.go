@@ -81,6 +81,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	payables.POST("", recordPayable(financeService))
 	payables.GET("", listPayables(financeService))
 	payables.GET("/:payable_id", emptyAuthRequest, getPayable(financeService))
+	payables.POST("/:payable_id/allocations", allocatePayable(financeService))
+	payables.GET("/:payable_id/allocations", listPayableAllocations(financeService))
+	payables.GET("/:payable_id/allocations/:allocation_id", emptyAuthRequest, getPayableAllocation(financeService))
+	payables.GET("/:payable_id/payment-summary", emptyAuthRequest, getPayablePaymentSummary(financeService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

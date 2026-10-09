@@ -10,11 +10,11 @@ import (
 	"github.com/wikiccu/biznes/internal/identity"
 )
 
-type publicReceivableAllocation struct {
+type publicPayableAllocation struct {
 	ID             string    `json:"id"`
 	OrganizationID string    `json:"organization_id"`
 	IdempotencyKey string    `json:"idempotency_key"`
-	ReceivableID   string    `json:"receivable_id"`
+	PayableID      string    `json:"payable_id"`
 	TransactionID  string    `json:"transaction_id"`
 	Amount         string    `json:"amount"`
 	Currency       string    `json:"currency"`
@@ -22,18 +22,18 @@ type publicReceivableAllocation struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
-func receivableAllocationDTO(item finance.Allocation) publicReceivableAllocation {
-	return publicReceivableAllocation{item.ID, item.OrganizationID, item.IdempotencyKey, item.DebtID,
+func payableAllocationDTO(item finance.Allocation) publicPayableAllocation {
+	return publicPayableAllocation{item.ID, item.OrganizationID, item.IdempotencyKey, item.DebtID,
 		item.TransactionID, strconv.FormatInt(item.Amount, 10), item.Currency, item.CreatedBy, item.CreatedAt.UTC()}
 }
 
-func allocateReceivable(service *finance.Service) gin.HandlerFunc {
+func allocatePayable(service *finance.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
 			return
 		}
-		receivableID, ok := resourceID(c, "receivable_id")
+		payableID, ok := resourceID(c, "payable_id")
 		if !ok {
 			return
 		}
@@ -44,7 +44,7 @@ func allocateReceivable(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, created, err := service.AllocateReceivable(c.Request.Context(), user.ID, organizationID, receivableID, input)
+		item, created, err := service.AllocatePayable(c.Request.Context(), user.ID, organizationID, payableID, input)
 		if err != nil {
 			writeFinanceError(c, err)
 			return
@@ -54,18 +54,18 @@ func allocateReceivable(service *finance.Service) gin.HandlerFunc {
 			status = http.StatusCreated
 		}
 		c.Header("Cache-Control", "no-store")
-		c.Header("Location", "/api/v1/organizations/"+organizationID+"/receivables/"+receivableID+"/allocations/"+item.ID)
-		c.JSON(status, gin.H{"data": receivableAllocationDTO(item)})
+		c.Header("Location", "/api/v1/organizations/"+organizationID+"/payables/"+payableID+"/allocations/"+item.ID)
+		c.JSON(status, gin.H{"data": payableAllocationDTO(item)})
 	}
 }
 
-func getReceivableAllocation(service *finance.Service) gin.HandlerFunc {
+func getPayableAllocation(service *finance.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
 			return
 		}
-		receivableID, ok := resourceID(c, "receivable_id")
+		payableID, ok := resourceID(c, "payable_id")
 		if !ok {
 			return
 		}
@@ -74,23 +74,23 @@ func getReceivableAllocation(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetReceivableAllocation(c.Request.Context(), user.ID, organizationID, receivableID, allocationID)
+		item, err := service.GetPayableAllocation(c.Request.Context(), user.ID, organizationID, payableID, allocationID)
 		if err != nil {
 			writeFinanceError(c, err)
 			return
 		}
 		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusOK, gin.H{"data": receivableAllocationDTO(item)})
+		c.JSON(http.StatusOK, gin.H{"data": payableAllocationDTO(item)})
 	}
 }
 
-func listReceivableAllocations(service *finance.Service) gin.HandlerFunc {
+func listPayableAllocations(service *finance.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
 			return
 		}
-		receivableID, ok := resourceID(c, "receivable_id")
+		payableID, ok := resourceID(c, "payable_id")
 		if !ok {
 			return
 		}
@@ -99,40 +99,40 @@ func listReceivableAllocations(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		items, err := service.ListReceivableAllocations(c.Request.Context(), user.ID, organizationID, receivableID, page, limit)
+		items, err := service.ListPayableAllocations(c.Request.Context(), user.ID, organizationID, payableID, page, limit)
 		if err != nil {
 			writeFinanceError(c, err)
 			return
 		}
-		data := make([]publicReceivableAllocation, 0, len(items))
+		data := make([]publicPayableAllocation, 0, len(items))
 		for _, item := range items {
-			data = append(data, receivableAllocationDTO(item))
+			data = append(data, payableAllocationDTO(item))
 		}
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"page": page, "limit": limit}})
 	}
 }
 
-func getReceivableCollectionSummary(service *finance.Service) gin.HandlerFunc {
+func getPayablePaymentSummary(service *finance.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
 			return
 		}
-		receivableID, ok := resourceID(c, "receivable_id")
+		payableID, ok := resourceID(c, "payable_id")
 		if !ok {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetReceivableCollectionSummary(c.Request.Context(), user.ID, organizationID, receivableID)
+		item, err := service.GetPayablePaymentSummary(c.Request.Context(), user.ID, organizationID, payableID)
 		if err != nil {
 			writeFinanceError(c, err)
 			return
 		}
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"organization_id": item.OrganizationID, "receivable_id": item.DebtID, "currency": item.Currency,
-			"amount": item.Amount, "collected_amount": item.AllocatedAmount, "outstanding_amount": item.OutstandingAmount,
+			"organization_id": item.OrganizationID, "payable_id": item.DebtID, "currency": item.Currency,
+			"amount": item.Amount, "paid_amount": item.AllocatedAmount, "outstanding_amount": item.OutstandingAmount,
 			"basis": "recorded_allocations",
 		}})
 	}

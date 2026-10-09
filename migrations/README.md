@@ -120,7 +120,7 @@ Rollback takes an ACCESS EXCLUSIVE lock and refuses populated receivables. Empty
 
 The application locks the selected tenant contact and requires supplier/both classification for new records. Later reclassification preserves stored obligations and matching retries; classification remains outside the FK, while PostgreSQL enforces tenant ownership and restricted deletion/rekeying. The API needs payables SELECT/INSERT, contact SELECT and existing UPDATE permission for row locking, plus current identity/session/membership permissions. Do not grant payable UPDATE/DELETE to the API role; it records debt without writing expense or cash transactions. Shared fields/validation/scanning/DTO formatting preserve receivable behavior, and each resource retains concrete scoped SQL.
 
-Apply 00011 explicitly before deploying payable routes. Rollback locks payables in ACCESS EXCLUSIVE mode and refuses populated storage; empty rollback drops only payables/indexes with RESTRICT, retaining every earlier domain and atomic Goose history. Never remove production debt to force rollback. No dependency or configuration setting is introduced. Payment allocations, settlements, outstanding totals, corrections, and overdue rules remain separate increments.
+Apply 00011 explicitly before deploying payable routes. Rollback locks payables in ACCESS EXCLUSIVE mode and refuses populated storage; empty rollback drops only payables/indexes with RESTRICT, retaining every earlier domain and atomic Goose history. Never remove production debt to force rollback. No dependency or configuration setting is introduced. Payment allocations and exact outstanding totals are implemented in 00013 below; corrections and overdue rules remain separate increments.
 
 ## Receivable collections
 
@@ -132,9 +132,19 @@ Apply 00012 explicitly, grant allocation SELECT/INSERT plus required existing de
 
 Rollback takes an ACCESS EXCLUSIVE allocation-table lock and refuses populated history, including allocations whose receipts were voided. Empty rollback drops only allocations/indexes and the two added reference constraints, preserving earlier schema/data and atomic Goose history. Do not delete production allocations to force rollback; use a corrective migration.
 
+## Supplier payments
+
+`00013_create_payable_allocations.sql` adds immutable expense-payment links to supplier obligations with tenant/resource keys, an independent organization/idempotency key, positive BIGINT whole-Rial amounts, derived IRR currency, creator/server time, and stable payable-history/payment/creator indexes. A new payable (organization/id/currency) unique reference key and migration 00012's existing transaction (organization/id/kind/currency) key support restricted composite FKs. Internal `transaction_kind` defaults to and is constrained to `expense`; it is not public input. The added unique constraint builds an index and locks populated payables, so schedule the explicit migration appropriately. No applied migration is edited.
+
+Aggregate payment/debt limits and current void eligibility reuse the application protocol: membership lock, transaction recognition advisory lock, payable advisory lock, then fresh READ COMMITTED retry/eligibility/capacity statements. Expense reversals already take the shared transaction lock introduced with receivable allocations. Payable debt keys use `hashtextextended('biznes:payable:' || organization_id::uuid::text || ':' || payable_id::uuid::text, 0)`. All financial writers and privileged direct SQL must honor those cooperative locks and checks. The API needs allocation SELECT/INSERT plus existing financial reads/session/membership permissions, without UPDATE/DELETE on immutable financial records. No new reversal protocol, dependency, or configuration setting is introduced.
+
+Apply 00013 before enabling payable allocation routes. Full expense voids reopen linked debt through derived recognition while preserving original obligations, transactions, allocation rows, and retry provenance. Over-paid obligations fail closed instead of returning negative outstanding. Allocation creation never inserts duplicate expense/cash. Concrete allocation fields, input validation, and scanning are shared with receivables; queries and public debt/collected/paid field names remain explicit.
+
+Rollback takes an ACCESS EXCLUSIVE allocation-table lock and refuses any stored history, including voided-payment allocations. Empty rollback drops only payable allocations/indexes and the new payable reference constraint. It preserves migration 00012's transaction reference key, receivable allocations, and all earlier data/history. Failure rolls back schema/history atomically. Do not remove production allocations to force rollback; use a corrective migration.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00013_create_payable_allocations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00014_add_financial_obligation_metadata.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

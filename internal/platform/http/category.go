@@ -134,6 +134,8 @@ func writeFinanceError(c *gin.Context, err error) {
 		WriteError(c, http.StatusConflict, "conflict", "This idempotency key was already used with different payable input.")
 	case errors.Is(err, finance.ErrAllocationConflict):
 		WriteError(c, http.StatusConflict, "conflict", "This allocation exceeds available amounts, uses an ineligible receipt, or reuses a key with different input.")
+	case errors.Is(err, finance.ErrPayableAllocationConflict):
+		WriteError(c, http.StatusConflict, "conflict", "This allocation exceeds available amounts, uses an ineligible payment, or reuses a key with different input.")
 	case errors.Is(err, finance.ErrUnavailable):
 		WriteError(c, http.StatusServiceUnavailable, "service_unavailable", "Finance service is temporarily unavailable.")
 	default:
