@@ -72,6 +72,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	receivables := organizations.Group("/:organization_id/receivables")
 	receivables.POST("", recordReceivable(financeService))
 	receivables.GET("", listReceivables(financeService))
+	receivables.GET("/aging", getReceivableAging(financeService))
 	receivables.GET("/:receivable_id", emptyAuthRequest, getReceivable(financeService))
 	receivables.POST("/:receivable_id/allocations", allocateReceivable(financeService))
 	receivables.GET("/:receivable_id/allocations", listReceivableAllocations(financeService))

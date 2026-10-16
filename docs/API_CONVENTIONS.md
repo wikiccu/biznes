@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations and exact collection/payment summaries, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable aging, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -353,7 +353,7 @@ A native organization/key constraint protects concurrent requests across replica
 
 Lists accept only `page` (1–10000) and `limit` (1–100), defaulting to 1/20, and order by `created_at, id`, rather than due date. Filters, duplicate/unknown/empty query values, bare `?`, and request bodies are rejected under the shared query contract; malformed page/limit values use `400` and parsed out-of-range values use `422`. Single GET accepts an empty body and no query string. No count query is added. Receivable originals expose no PUT/PATCH/DELETE or reversal route. Receipt allocations and their summary have separate routes below.
 
-A receivable records an amount owed. Creation never inserts income, changes recorded account activity, or asserts cash collection; there is no account/category link or double recognition. Receipt allocations and exact outstanding totals are implemented below. Corrections, overdue/aging calculations, business timezone preferences, and reminders follow separately. Overdue cutoffs must use an explicit business timezone when implemented; this step does not guess one. Storage or permission failures return safe `503`, including missing migration 00010. No dependency or configuration setting is introduced.
+A receivable records an amount owed. Creation never inserts income, changes recorded account activity, or asserts cash collection; there is no account/category link or double recognition. Receipt allocations and exact outstanding totals are implemented below. Receivable aging is implemented below using a caller-supplied calendar-date cutoff and current outstanding basis. Corrections, business timezone preferences, and reminders follow separately. Storage or permission failures return safe `503`, including missing migration 00010. No dependency or configuration setting is introduced.
 
 ## Receivable collections
 
@@ -411,6 +411,54 @@ Lists order by `created_at, id`, accept only existing bounded `page`/`limit` (de
 Summary uses PostgreSQL NUMERIC aggregates and exact decimal text: collected is the sum of unreversed allocations; outstanding is original amount minus collected. A known empty receivable has zero collected and its full original amount outstanding. Membership, obligation, allocations and reversal exclusions share one statement snapshot; separate requests may observe different commits. `basis: "recorded_allocations"` describes recorded associations, without asserting revenue, actual cash balance, verified payment identity, overdue status, or completeness of imported history. Denied permissions, missing schema, dependency failures, or an over-collected obligation caused by privileged corruption return safe `503` instead of fabricated/negative outstanding totals.
 
 Allocation writes hold transaction-level receipt recognition and then receivable advisory locks before using fresh statements for retry, eligibility, and exact capacity checks. Reversals take the same receipt lock. PostgreSQL releases these [transaction advisory locks](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS) at transaction end. They are cooperative: deploy all allocation/reversal writers together before enabling this capability. Native constraints enforce positive IRR amounts, scoped retry uniqueness, creator links, and same-tenant/currency income/debt references; aggregate capacities and current reversal eligibility are enforced by these serialized application operations. Privileged direct SQL must obey the same locking, eligibility, and capacity rules. The API needs allocation SELECT/INSERT plus existing receipt/debt/reversal reads and membership/session permissions; financial UPDATE/DELETE grants are unnecessary. There are no new dependencies or configuration settings.
+
+## Receivable aging
+
+`GET /api/v1/organizations/:organization_id/receivables/aging?as_of=2026-10-16` returns one organization-wide report of current recorded receivable outstanding amounts classified by due date. Every current member, including staff, can read. The static `/aging` route is separate from original receivable retrieval; existing original/list/allocation/summary response shapes and behavior remain intact.
+
+The only supported query parameter is required `as_of`: a strict Gregorian `YYYY-MM-DD` date, valid within years 0001–9999, with no time, offset, whitespace trimming, Jalali conversion, or server-clock default. The caller chooses the calendar date appropriate to its business. Shared date validation also continues to protect receivable/payable `due_date` input. An absent parameter returns `422` with `as_of / required`; a malformed date returns `422` with `invalid_format`. Explicitly empty, duplicate (including encoded aliases), unknown, malformed query parameters, bare `?`, and non-empty bodies use the existing `400 invalid_request` parser. Pagination, currency, account, tenant, contact, and identity overrides are rejected.
+
+The report has `organization_id`, `currency: "IRR"`, date-only `as_of`, `basis: "current_recorded_allocations"`, exact decimal-string `outstanding_amount` and `overdue_amount`, plus a fixed ordered `buckets` array. Each bucket has `bucket` and decimal-string `outstanding_amount`:
+
+| Bucket | Due-day classification |
+| --- | --- |
+| `not_due` | Due date after the cutoff. |
+| `due_today` | Due date equals the cutoff; not overdue. |
+| `overdue_1_30` | 1–30 Gregorian calendar days before the cutoff, inclusive. |
+| `overdue_31_60` | 31–60 days before the cutoff, inclusive. |
+| `overdue_61_90` | 61–90 days before the cutoff, inclusive. |
+| `overdue_over_90` | More than 90 days before the cutoff. |
+
+```json
+{
+  "data": {
+    "organization_id": "34023142-a6e3-46cb-ae51-0a8b607d0221",
+    "currency": "IRR",
+    "as_of": "2026-10-16",
+    "basis": "current_recorded_allocations",
+    "outstanding_amount": "100000000",
+    "overdue_amount": "70000000",
+    "buckets": [
+      {"bucket": "not_due", "outstanding_amount": "20000000"},
+      {"bucket": "due_today", "outstanding_amount": "10000000"},
+      {"bucket": "overdue_1_30", "outstanding_amount": "30000000"},
+      {"bucket": "overdue_31_60", "outstanding_amount": "10000000"},
+      {"bucket": "overdue_61_90", "outstanding_amount": "20000000"},
+      {"bucket": "overdue_over_90", "outstanding_amount": "10000000"}
+    ]
+  }
+}
+```
+
+For each obligation, outstanding equals its original amount minus its currently recognized allocations. Full receipt voids remove the affected allocations from recognition and reopen that debt in its due-date bucket. Fully collected obligations contribute zero. PostgreSQL NUMERIC sums and subtraction produce exact decimal text, including totals beyond BIGINT or JavaScript numeric precision. Overall outstanding equals the sum of all six buckets; overdue equals the sum of the last four. There are no count queries, rounding, currency conversion, stored aging/status mutations, or separately cached totals.
+
+`as_of` controls only due-date classification. It does not filter obligation creation, transaction occurrence, allocation creation, or reversal creation. Current allocations reduce the result even if recorded/occurred after the cutoff; current full reversals reopen debt for every cutoff. This is current recorded outstanding aged against a chosen date, without historical “as known then” or cutoff-balance claims. Backdated/future-dated records already committed are included. No actual cash balance, verified payer, imported-history completeness, or automatic business-timezone preference is established.
+
+Membership, selected obligations, allocations, and same-tenant reversal exclusions share one statement snapshot. Unknown or inaccessible organizations return generic `404`; a known empty organization returns `"0"` totals and all six zero buckets. Already authorized reads may finish before later membership removal commits, and separate requests may observe different commits. Malformed organization UUIDs use the shared `400` guard, missing/invalid bearer sessions use `401`, and unsupported methods (including HEAD/OPTIONS) use `405` with `Allow: GET`.
+
+Negative outstanding from privileged over-allocation, denied SELECT permissions, missing schema, dependency failures, or the five-second/request-cancellation deadline fail closed with safe `503` rather than fabricated totals. A negative obligation anywhere in the organization invalidates the report, including not-yet-due debt. Responses use `Cache-Control: no-store` and request IDs; financial data and query input remain absent from application logs. The API needs only existing financial/membership SELECT plus current identity/session permissions for this read, without financial writes or membership row-lock grants.
+
+Existing migrations through 00013, native DATE arithmetic, scoped indexes, strict query/errors, and concrete finance data access are reused. No new migration, dependency, configuration, test file, overdue list/filter, contact-level breakdown, historical balance, or payable-aging route is added. Aggregation reads recorded history on demand; add rollups only if measured latency requires them.
 
 ## Payables
 

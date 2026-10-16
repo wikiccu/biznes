@@ -25,6 +25,17 @@ type ReceivableInput = DebtInput
 
 var ErrReceivableConflict = errors.New("receivable idempotency key already used with different input")
 
+func validateDate(value string) (time.Time, string) {
+	if value == "" {
+		return time.Time{}, "required"
+	}
+	date, err := time.Parse(time.DateOnly, value)
+	if err != nil || len(value) != 10 || date.Year() < 1 {
+		return time.Time{}, "invalid_format"
+	}
+	return date, ""
+}
+
 func validateDebt(input DebtInput) (int64, time.Time, error) {
 	var fields []FieldError
 	for _, field := range []struct{ name, value string }{
@@ -45,11 +56,9 @@ func validateDebt(input DebtInput) (int64, time.Time, error) {
 	} else if input.Currency != "IRR" {
 		fields = append(fields, FieldError{"currency", "invalid_format"})
 	}
-	dueDate, err := time.Parse(time.DateOnly, input.DueDate)
-	if input.DueDate == "" {
-		fields = append(fields, FieldError{"due_date", "required"})
-	} else if err != nil || len(input.DueDate) != 10 || dueDate.Year() < 1 {
-		fields = append(fields, FieldError{"due_date", "invalid_format"})
+	dueDate, code := validateDate(input.DueDate)
+	if code != "" {
+		fields = append(fields, FieldError{"due_date", code})
 	}
 	if code := validateDescription(input.Description); code != "" {
 		fields = append(fields, FieldError{"description", code})
