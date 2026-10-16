@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, outgoing payable instruments, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -641,6 +641,60 @@ Collected amounts sum unreversed income allocations with exact NUMERIC arithmeti
 Membership, all selected range balances, integrity and page eligibility share one statement snapshot. Negative outstanding anywhere in the selected range returns safe `503` even beyond an empty requested page; records outside the range do not affect it. Separate requests do not share snapshots. Exact result fields/scanning, date validation, and HTTP formatting are shared with upcoming payables, while SQL and debt-family SELECT permissions remain separate. The payable response still uses `payable_id` / `paid_amount` with unchanged recognition and query behavior.
 
 Existing financial/membership SELECT plus identity/session permissions suffice without financial writes, membership row locks, or SELECT on payable, contact, account, category or original transaction tables. Missing/denied required schema returns safe `503` and unknown/inaccessible organizations use generic `404`. No schema migration, dependency, setting, count query, cached balance or settlement workflow is added. Range balances are derived on demand; optimize only when measured latency requires it.
+
+## Outgoing payable instruments
+
+`POST /api/v1/organizations/:organization_id/payable-instruments` records an immutable outgoing check linked to an existing same-tenant payable. `GET` on that collection lists in stable `created_at, id` order with existing bounded `page` / `limit` defaults/caps and no extra selectors. `GET /api/v1/organizations/:organization_id/payable-instruments/:instrument_id` retrieves one scoped record. Owner/admin/accountant members record and replay; every current member reads. Missing/inaccessible organizations, instruments and payable references use generic `404`; staff recording/replay uses `403`.
+
+POST accepts only string fields `idempotency_key`, `payable_id`, `kind`, `amount`, `currency`, `due_date`, `bank_name`, `reference` and optional `description`. All except description are required. Existing UUID, whole-Rial amount, IRR currency and Gregorian date validation is reused: lowercase canonical UUID shape, positive amounts through `9223372036854775807` without leading zeros, and strict native date-only years 0001–9999. Kind must be `check`. Bank name and reference use existing name validation: trim Unicode whitespace, require 1–120 Unicode characters and reject controls. They are opaque metadata; bank ownership, regional check format and authenticity are not verified. References are not globally or tenant-unique; retry keys identify a recording intent. Description retains the existing 2000-character policy allowing LF/CR/tab, with omission yielding an empty string.
+
+```json
+{
+  "idempotency_key": "e5e27acd-ebf4-4fae-9913-a1e3737191d3",
+  "payable_id": "272aa668-3b12-4ec1-b5dc-40a9216ee2b2",
+  "kind": "check",
+  "amount": "25000000",
+  "currency": "IRR",
+  "due_date": "2026-10-31",
+  "bank_name": "Example Bank",
+  "reference": "CHK-001",
+  "description": "Supplier check"
+}
+```
+
+New records return `201` and `Location`; matching retries return `200` with the same Location, resource ID, creator and creation time across replicas/restarts. Retry comparison uses trimmed bank/reference, exact original amount/currency/date/kind/payable and preserved description. Reusing the organization/key with changed valid input returns safe `409 conflict`. Instrument keys have a separate namespace from payable, transaction and allocation operations. Current authorization is checked again for retries. Current contact classification and subsequent payments/voids do not invalidate matching recorded intent.
+
+The selected payable supplies tenant/contact association and the currency reference. A new instrument must use the payable currency and its individual amount must not exceed the original payable amount; an eligible scoped reference is required before insert. Amount-to-original validation is an application check over immutable API payables, not an aggregate database capacity constraint. Mismatches return `409`. There is no remaining-outstanding or sum-of-instruments reservation check: multiple records, including records for already settled payables, describe intent/history only. Due date is the instrument's date and may differ from the underlying payable's date.
+
+```json
+{
+  "data": {
+    "id": "8c359a75-5664-475e-9b32-e742ff8fe56f",
+    "organization_id": "34023142-a6e3-46cb-ae51-0a8b607d0221",
+    "idempotency_key": "e5e27acd-ebf4-4fae-9913-a1e3737191d3",
+    "payable_id": "272aa668-3b12-4ec1-b5dc-40a9216ee2b2",
+    "kind": "check",
+    "direction": "outgoing",
+    "status": "recorded",
+    "amount": "25000000",
+    "currency": "IRR",
+    "due_date": "2026-10-31",
+    "bank_name": "Example Bank",
+    "reference": "CHK-001",
+    "description": "Supplier check",
+    "created_by": "82018312-dc98-4a67-be7e-3fd1db223e32",
+    "created_at": "2026-10-16T09:30:00Z"
+  }
+}
+```
+
+DTOs contain exactly those fifteen fields. Direction/status are server-derived statements that an outgoing intent was recorded; they do not establish bank issuance, clearance, payment or available cash. Instrument recording does not create another debt, expense, cash transaction or payment allocation, change financial originals, or affect aging/upcoming/activity totals. Only existing expense allocations and full-void recognition affect payable outstanding. A later void changes debt while leaving instrument metadata recorded.
+
+Shared strict 8 KiB JSON/media/UTF-8/field parsing, path UUID guards, empty read bodies, no query on POST/get, generic safe errors, request IDs, no-store, session authentication, five-second operations and request cancellation apply. Semantic fields use ordered `422` details: key, payable, kind, amount, currency, date, bank, reference, description. Unsupported kind/currency/UUID/date/control input uses `invalid_format`; amount/name/description limits use `out_of_range`; missing/blank required text uses `required`. Unknown/duplicate/null/non-string fields use `400`. Direction, status, tenant/contact/creator/time overrides are rejected. PUT/PATCH/DELETE/HEAD/OPTIONS use `405` with the registered Allow methods.
+
+Migration `00014` adds native tenant/currency/payable/creator references, positive amount/kind/date/text constraints, retry uniqueness and stable/FK indexes. Existing migrations and financial recognition queries stay intact. Creation/listing lock current membership through their transaction; native key uniqueness and a fresh committed-winner read serialize matching/conflicting retries. Retrieval joins current membership. The API needs instrument SELECT/INSERT, payable SELECT for new records, and existing identity/session/membership permissions including membership row-lock permission for creation/listing. No UPDATE/DELETE on instruments or payables, contact mutation/locking, or account/transaction/settlement-table access is needed. Missing/denied schema, dependency failure and operation deadlines return safe `503`; partial responses and raw storage errors are not returned or logged.
+
+No update/delete/cancel/settle route, regional registration integration, bank account/chequebook, incoming instrument, reservation, cash forecast, notification, dependency or configuration setting is added. Lifecycle and settlement links require later explicit rules that preserve original debt/payment recognition.
 
 ## Pagination
 

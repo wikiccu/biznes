@@ -142,9 +142,19 @@ Apply 00013 before enabling payable allocation routes. Full expense voids reopen
 
 Rollback takes an ACCESS EXCLUSIVE allocation-table lock and refuses any stored history, including voided-payment allocations. Empty rollback drops only payable allocations/indexes and the new payable reference constraint. It preserves migration 00012's transaction reference key, receivable allocations, and all earlier data/history. Failure rolls back schema/history atomically. Do not remove production allocations to force rollback; use a corrective migration.
 
+## Outgoing payable instruments
+
+`00014_create_payable_instruments.sql` adds immutable API `biznes.payable_instruments` records for outgoing checks linked to existing payables. Native UUID defaults, tenant/resource keys, an independent organization/idempotency key, fixed `check` kind, positive BIGINT whole-Rial IRR amounts, finite DATE years 0001–9999, bounded bank/reference/description text, creator/time and stable/FK indexes follow the existing patterns. A restricted composite FK reuses `payables(organization_id,id,currency)` from 00013. The payable supplies the contact association; no copied contact/account or duplicated underlying obligation is stored. Direction `outgoing` and status `recorded` are derived by the DTO while no lifecycle transitions are implemented.
+
+Apply the migration before deploying the routes. Existing populated domains, migrations and financial reporting queries remain intact. API recording validates each amount against its original payable amount; that application cross-row rule is not a native aggregate capacity constraint. Instruments do not reserve current outstanding or alter settlement/cash. Multiple instruments and instruments on fully paid payables remain intent/history, with no claim of bank verification or clearance.
+
+Grant instrument SELECT/INSERT, payable SELECT for new records, and existing identity/session/membership permissions including membership UPDATE for row locking on record/list. A column grant on membership role suffices for that lock. No instrument/payable UPDATE/DELETE, contact lock, allocation, reversal, transaction or financial account grant is needed. Current membership locks, native retry uniqueness and fresh winner reads preserve role/tenant/retry/provenance boundaries across replicas. Privileged direct SQL must retain application invariants.
+
+Rollback locks the instrument table and refuses any stored records, retaining schema/history atomically. Empty rollback drops only the new table/indexes with RESTRICT, preserving all prior data and reference constraints. Do not remove production instruments to force rollback; use a corrective migration. No dependency or setting changes are required. Incoming instruments and lifecycle/settlement follow separately.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00014_add_financial_obligation_metadata.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00015_add_instrument_metadata.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up
