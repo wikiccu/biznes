@@ -9,7 +9,7 @@ import (
 	"github.com/wikiccu/biznes/internal/identity"
 )
 
-func listUpcomingPayables(service *finance.Service) gin.HandlerFunc {
+func listUpcomingDebts(service *finance.Service, payable bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -24,8 +24,16 @@ func listUpcomingPayables(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		items, err := service.ListUpcomingPayables(c.Request.Context(), user.ID, organizationID, page, limit,
-			finance.DueDateRange{From: query.Get("due_from"), To: query.Get("due_to")})
+		input := finance.DueDateRange{From: query.Get("due_from"), To: query.Get("due_to")}
+		var items []finance.UpcomingDebt
+		var err error
+		idField, allocatedField := "receivable_id", "collected_amount"
+		if payable {
+			items, err = service.ListUpcomingPayables(c.Request.Context(), user.ID, organizationID, page, limit, input)
+			idField, allocatedField = "payable_id", "paid_amount"
+		} else {
+			items, err = service.ListUpcomingReceivables(c.Request.Context(), user.ID, organizationID, page, limit, input)
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return
@@ -33,8 +41,8 @@ func listUpcomingPayables(service *finance.Service) gin.HandlerFunc {
 		data := make([]gin.H, 0, len(items))
 		for _, item := range items {
 			data = append(data, gin.H{
-				"payable_id": item.ID, "contact_id": item.ContactID, "amount": item.Amount, "currency": item.Currency,
-				"due_date": item.DueDate.Format(time.DateOnly), "paid_amount": item.PaidAmount,
+				idField: item.ID, "contact_id": item.ContactID, "amount": item.Amount, "currency": item.Currency,
+				"due_date": item.DueDate.Format(time.DateOnly), allocatedField: item.AllocatedAmount,
 				"outstanding_amount": item.OutstandingAmount,
 			})
 		}

@@ -4,14 +4,15 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/wikiccu/biznes/internal/organization"
 )
 
 type DueDateRange struct{ From, To string }
 
-type UpcomingPayable struct {
-	ID, ContactID, Amount, Currency, PaidAmount, OutstandingAmount string
-	DueDate                                                        time.Time
+type UpcomingDebt struct {
+	ID, ContactID, Amount, Currency, AllocatedAmount, OutstandingAmount string
+	DueDate                                                             time.Time
 }
 
 func validateDueDateRange(input DueDateRange) (time.Time, time.Time, error) {
@@ -33,7 +34,7 @@ func validateDueDateRange(input DueDateRange) (time.Time, time.Time, error) {
 	return from, to, nil
 }
 
-func (s *Service) ListUpcomingPayables(ctx context.Context, userID, organizationID string, page, limit int, input DueDateRange) ([]UpcomingPayable, error) {
+func (s *Service) ListUpcomingPayables(ctx context.Context, userID, organizationID string, page, limit int, input DueDateRange) ([]UpcomingDebt, error) {
 	from, to, err := validateDueDateRange(input)
 	if err != nil {
 		return nil, err
@@ -44,7 +45,7 @@ func (s *Service) ListUpcomingPayables(ctx context.Context, userID, organization
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	// shortcut: derive range balances on demand, add indexes or rollups only if measured latency requires them.
-	rows, err := s.pool.Query(ctx, `WITH authorized AS (
+	return scanUpcomingDebts(s.pool.Query(ctx, `WITH authorized AS (
 		SELECT organization_id FROM biznes.memberships WHERE organization_id = $1 AND user_id = $2
 	), balances AS MATERIALIZED (
 		SELECT p.id, p.contact_id, p.amount, p.currency, p.due_date, payments.paid,
@@ -64,18 +65,21 @@ func (s *Service) ListUpcomingPayables(ctx context.Context, userID, organization
 		COALESCE(p.currency, 'IRR'), COALESCE(p.due_date, DATE '0001-01-01'),
 		COALESCE(p.paid::text, '0'), COALESCE(p.outstanding::text, '0')
 	FROM authorized m LEFT JOIN selected p ON true ORDER BY p.due_date, p.id`,
-		organizationID, userID, from, to, limit, (page-1)*limit)
+		organizationID, userID, from, to, limit, (page-1)*limit))
+}
+
+func scanUpcomingDebts(rows pgx.Rows, err error) ([]UpcomingDebt, error) {
 	if err != nil {
 		return nil, ErrUnavailable
 	}
 	defer rows.Close()
-	items := make([]UpcomingPayable, 0)
+	items := make([]UpcomingDebt, 0)
 	found := false
 	for rows.Next() {
-		var item UpcomingPayable
+		var item UpcomingDebt
 		var valid bool
 		if err := rows.Scan(&valid, &item.ID, &item.ContactID, &item.Amount, &item.Currency,
-			&item.DueDate, &item.PaidAmount, &item.OutstandingAmount); err != nil || !valid {
+			&item.DueDate, &item.AllocatedAmount, &item.OutstandingAmount); err != nil || !valid {
 			return nil, ErrUnavailable
 		}
 		found = true
