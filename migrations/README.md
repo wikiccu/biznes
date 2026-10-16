@@ -144,7 +144,7 @@ Rollback takes an ACCESS EXCLUSIVE allocation-table lock and refuses any stored 
 
 ## Outgoing payable instruments
 
-`00014_create_payable_instruments.sql` adds immutable API `biznes.payable_instruments` records for outgoing checks linked to existing payables. Native UUID defaults, tenant/resource keys, an independent organization/idempotency key, fixed `check` kind, positive BIGINT whole-Rial IRR amounts, finite DATE years 0001–9999, bounded bank/reference/description text, creator/time and stable/FK indexes follow the existing patterns. A restricted composite FK reuses `payables(organization_id,id,currency)` from 00013. The payable supplies the contact association; no copied contact/account or duplicated underlying obligation is stored. Direction `outgoing` and status `recorded` are derived by the DTO while no lifecycle transitions are implemented.
+`00014_create_payable_instruments.sql` adds immutable API `biznes.payable_instruments` records for outgoing checks linked to existing payables. Native UUID defaults, tenant/resource keys, an independent organization/idempotency key, fixed `check` kind, positive BIGINT whole-Rial IRR amounts, finite DATE years 0001–9999, bounded bank/reference/description text, creator/time and stable/FK indexes follow the existing patterns. A restricted composite FK reuses `payables(organization_id,id,currency)` from 00013. The payable supplies the contact association; no copied contact/account or duplicated underlying obligation is stored. Direction is outgoing; current recorded/canceled status is derived through the separate 00016 cancellation history below. Original metadata stays immutable.
 
 Apply the migration before deploying the routes. Existing populated domains, migrations and financial reporting queries remain intact. API recording validates each amount against its original payable amount; that application cross-row rule is not a native aggregate capacity constraint. Instruments do not reserve current outstanding or alter settlement/cash. Multiple instruments and instruments on fully paid payables remain intent/history, with no claim of bank verification or clearance.
 
@@ -162,9 +162,19 @@ Application recording bounds each instrument to original receivable amount witho
 
 Rollback takes an ACCESS EXCLUSIVE lock and refuses populated incoming instrument history, preserving schema/history atomically. Empty rollback drops only the new table/indexes with RESTRICT and retains outgoing instruments, receipt collections and all earlier data/reference keys. Do not delete production records to force rollback; use a corrective migration. No dependency or configuration setting is added.
 
+## Outgoing instrument cancellations
+
+`00016_create_payable_instrument_cancellations.sql` appends cancellation intent/history without altering instrument or financial rows. Composite organization/resource keys, restricted instrument/creator references, independent organization/key uniqueness, one cancellation per organization/instrument, required bounded nonblank/control-free reason, native creation time and a creator index follow the reversal pattern. No amount or duplicate debt/cash data is stored. The instrument unique key supports indexed status lookups.
+
+Apply 00016 and grant cancellation SELECT to updated outgoing readers before deploying them. Cancellation writers additionally require cancellation INSERT and instrument SELECT, plus existing identity/session/membership locking permissions. Original instrument writers retain their existing insert/parent-read permissions. No cancellation/instrument UPDATE/DELETE or other financial mutation grant is needed. Membership locks and native uniqueness with fresh winner reads preserve authorized retry/provenance under races; cancellation is intent-only and does not participate in transaction recognition.
+
+Outgoing get/list/record retries now derive recorded/canceled status with a same-tenant EXISTS in their statement snapshot. Incoming scanners add a constant recorded status and require no cancellation-table access. Upgrade all readers before enabling cancellation traffic; older binaries always report recorded. Missing schema or SELECT fails closed instead of reporting fabricated status.
+
+Rollback locks cancellation storage and refuses any stored history. Empty rollback drops only the cancellation table/indexes with RESTRICT, preserving original instruments and every prior financial domain/reference key. Roll back updated readers before dropping their required table. Failures retain schema/history atomically; do not remove production cancellations to force rollback. Bank cancellation, correction/undo, incoming cancellation and settlement remain separate workflows. No dependency or setting is added.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00016_add_instrument_cancellation_history.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00017_create_receivable_instrument_cancellations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

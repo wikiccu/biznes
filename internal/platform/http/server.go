@@ -93,6 +93,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	instruments.POST("", recordInstrument(financeService, true))
 	instruments.GET("", listInstruments(financeService, true))
 	instruments.GET("/:instrument_id", emptyAuthRequest, getInstrument(financeService, true))
+	instruments.POST("/:instrument_id/cancellation", cancelPayableInstrument(financeService))
+	instruments.GET("/:instrument_id/cancellation", emptyAuthRequest, getPayableInstrumentCancellation(financeService))
 	incomingInstruments := organizations.Group("/:organization_id/receivable-instruments")
 	incomingInstruments.POST("", recordInstrument(financeService, false))
 	incomingInstruments.GET("", listInstruments(financeService, false))

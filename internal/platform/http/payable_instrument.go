@@ -17,7 +17,7 @@ func instrumentDTO(item finance.Instrument, payable bool) gin.H {
 	}
 	return gin.H{
 		"id": item.ID, "organization_id": item.OrganizationID, "idempotency_key": item.IdempotencyKey,
-		debtField: item.DebtID, "kind": item.Kind, "direction": direction, "status": "recorded",
+		debtField: item.DebtID, "kind": item.Kind, "direction": direction, "status": item.Status,
 		"amount": strconv.FormatInt(item.Amount, 10), "currency": item.Currency,
 		"due_date": item.DueDate.Format(time.DateOnly), "bank_name": item.BankName, "reference": item.Reference,
 		"description": item.Description, "created_by": item.CreatedBy, "created_at": item.CreatedAt.UTC(),

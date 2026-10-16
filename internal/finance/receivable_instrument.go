@@ -32,7 +32,7 @@ func (s *Service) RecordReceivableInstrument(ctx context.Context, userID, organi
 		return Instrument{}, false, organization.ErrForbidden
 	}
 	item, err := scanInstrument(tx.QueryRow(ctx, `SELECT id, organization_id, idempotency_key, receivable_id, kind,
-		amount, currency, due_date, bank_name, reference, description, created_by, created_at
+		amount, currency, due_date, bank_name, reference, description, created_by, created_at, 'recorded'::text
 		FROM biznes.receivable_instruments WHERE organization_id = $1 AND idempotency_key = $2`,
 		organizationID, input.IdempotencyKey))
 	created := false
@@ -55,14 +55,14 @@ func (s *Service) RecordReceivableInstrument(ctx context.Context, userID, organi
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (organization_id, idempotency_key) DO NOTHING
 			RETURNING id, organization_id, idempotency_key, receivable_id, kind, amount, currency, due_date,
-				bank_name, reference, description, created_by, created_at`,
+				bank_name, reference, description, created_by, created_at, 'recorded'::text`,
 			organizationID, input.IdempotencyKey, input.DebtID, input.Kind, amount, input.Currency, dueDate,
 			input.BankName, input.Reference, input.Description, userID))
 		created = err == nil
 		if errors.Is(err, pgx.ErrNoRows) {
 			// A fresh statement observes the committed retry winner across replicas.
 			item, err = scanInstrument(tx.QueryRow(ctx, `SELECT id, organization_id, idempotency_key, receivable_id, kind,
-				amount, currency, due_date, bank_name, reference, description, created_by, created_at
+				amount, currency, due_date, bank_name, reference, description, created_by, created_at, 'recorded'::text
 				FROM biznes.receivable_instruments WHERE organization_id = $1 AND idempotency_key = $2`,
 				organizationID, input.IdempotencyKey))
 		}
@@ -89,7 +89,7 @@ func (s *Service) GetReceivableInstrument(ctx context.Context, userID, organizat
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	item, err := scanInstrument(s.pool.QueryRow(ctx, `SELECT i.id, i.organization_id, i.idempotency_key, i.receivable_id, i.kind,
-		i.amount, i.currency, i.due_date, i.bank_name, i.reference, i.description, i.created_by, i.created_at
+		i.amount, i.currency, i.due_date, i.bank_name, i.reference, i.description, i.created_by, i.created_at, 'recorded'::text
 		FROM biznes.receivable_instruments i JOIN biznes.memberships m ON m.organization_id = i.organization_id
 		WHERE i.organization_id = $1 AND i.id = $2 AND m.user_id = $3`, organizationID, instrumentID, userID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -116,7 +116,7 @@ func (s *Service) ListReceivableInstruments(ctx context.Context, userID, organiz
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `SELECT id, organization_id, idempotency_key, receivable_id, kind,
-		amount, currency, due_date, bank_name, reference, description, created_by, created_at
+		amount, currency, due_date, bank_name, reference, description, created_by, created_at, 'recorded'::text
 		FROM biznes.receivable_instruments WHERE organization_id = $1 ORDER BY created_at, id LIMIT $2 OFFSET $3`,
 		organizationID, limit, (page-1)*limit)
 	if err != nil {
