@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable aging, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -458,7 +458,7 @@ Membership, selected obligations, allocations, and same-tenant reversal exclusio
 
 Negative outstanding from privileged over-allocation, denied SELECT permissions, missing schema, dependency failures, or the five-second/request-cancellation deadline fail closed with safe `503` rather than fabricated totals. A negative obligation anywhere in the organization invalidates the report, including not-yet-due debt. Responses use `Cache-Control: no-store` and request IDs; financial data and query input remain absent from application logs. The API needs only existing financial/membership SELECT plus current identity/session permissions for this read, without financial writes or membership row-lock grants.
 
-Existing migrations through 00013, native DATE arithmetic, scoped indexes, strict query/errors, and concrete finance data access are reused. No new migration, dependency, configuration, test file, overdue list/filter, contact-level breakdown, historical balance, or payable-aging route is added. Aggregation reads recorded history on demand; add rollups only if measured latency requires them.
+Existing migrations through 00013, native DATE arithmetic, scoped indexes, strict query/errors, and concrete finance data access are reused. No new migration, dependency, configuration, test file, overdue list/filter, or contact-level breakdown is added. Payable aging is implemented separately below. Aggregation reads recorded history on demand; add rollups only if measured latency requires them.
 
 ## Payables
 
@@ -491,7 +491,7 @@ Responses contain `data.id`, `organization_id`, `idempotency_key`, `contact_id`,
 
 Lists default to page 1/limit 20, accept only bounded page (1–10000) and limit (1–100), order by `created_at, id`, and return the usual array plus `meta.page`/`meta.limit` without a count. Out-of-range numeric values use `422`; malformed/unknown/duplicate/empty query values, bare `?`, and bodies use `400`. Single GET accepts no query string and an empty body. Existing receivable response shapes, ordering, validation, and permissions stay intact.
 
-A payable records an amount owed to a supplier. Creation does not record an expense, make a cash payment, or alter account activity; there is no account/category link. Original payables expose no update/delete, correction, or mutable status route. Payment allocations and exact outstanding totals are implemented below; overdue/aging remains planned. No dependency or configuration setting is introduced.
+A payable records an amount owed to a supplier. Creation does not record an expense, make a cash payment, or alter account activity; there is no account/category link. Original payables expose no update/delete, correction, or mutable status route. Payment allocations, exact outstanding totals, and payable aging are implemented below. No dependency or configuration setting is introduced.
 
 ## Supplier payments
 
@@ -541,6 +541,24 @@ GET history uses stable `created_at, id` ordering, the existing page 1/limit 20 
 Paid is the exact NUMERIC sum of unreversed payable allocations; outstanding is original debt minus paid, returned directly as decimal text. Membership, debt, allocations and reversal exclusions share one statement snapshot. Separate requests can observe different commits. `basis: "recorded_allocations"` describes recorded associations without asserting actual cash balance, completeness of imported history, verified recipient identity, overdue status, or historical recognition. Over-paid obligations caused by privileged corruption fail closed with safe `503` instead of negative outstanding.
 
 Writes reuse transaction recognition locks shared with reversals, then acquire the payable lock before fresh retry/eligibility/capacity statements. Lock identifiers use the existing `biznes:transaction:` prefix and `biznes:payable:` for the debt. Every allocation/reversal writer, including privileged direct SQL, must follow the cooperative locking and capacity rules described in [migration notes](../migrations/README.md#supplier-payments). Native constraints enforce positive IRR amounts, retry uniqueness, creator links and restricted same-tenant/currency expense/debt references. Allocation SELECT/INSERT and existing debt/transaction/reversal reads plus current session/membership permissions suffice; financial UPDATE/DELETE grants are unnecessary. No dependency or configuration setting is added.
+
+## Payable aging
+
+`GET /api/v1/organizations/:organization_id/payables/aging?as_of=2026-10-16` returns organization-wide current recorded supplier outstanding amounts classified by due day. It uses the [receivable aging contract](#receivable-aging): required strict Gregorian `as_of` within years 0001–9999, exact decimal-string IRR totals, and the same fixed ordered bucket codes/bounds. Every current member, including staff, reads. The static `/aging` route remains separate from original payable retrieval.
+
+The response has exactly `organization_id`, `currency: "IRR"`, date-only `as_of`, `basis: "current_recorded_allocations"`, decimal-string `outstanding_amount` / `overdue_amount`, and `buckets`. Each bucket has `bucket` and decimal-string `outstanding_amount`. The ordered buckets are `not_due`, `due_today`, `overdue_1_30`, `overdue_31_60`, `overdue_61_90`, and `overdue_over_90`. Due today is not overdue; overall outstanding sums all six buckets and overdue sums the last four.
+
+For each payable, current outstanding is original amount minus currently recognized payment allocations. Full expense reversals remove their allocations from recognition, reopening debt in its due-day bucket without altering history or creating expense/cash. Fully paid records contribute zero. Native NUMERIC aggregates/subtraction return exact decimal text beyond BIGINT or JavaScript precision, and DATE subtraction counts Gregorian calendar days without timezones.
+
+`as_of` only controls classification. It does not filter obligation creation, transaction occurrence, allocation creation, or reversal creation; current allocations and voids apply to every cutoff even if recorded/occurred later. No historical balance, actual cash position, verified recipient, imported-history completeness, or automatic business-timezone preference is implied. There is no server-clock default.
+
+Membership, payables, payable allocations, and same-tenant reversal exclusions share one statement snapshot. A known empty organization returns zero totals/all six zero buckets; missing or inaccessible organizations use generic `404`, including callers belonging to other tenants. Separate requests may observe different commits, and already authorized reads may finish before later membership removal commits. Receivable aging keeps its existing SQL, JSON fields, bucket order, and recognition behavior; neither report requires SELECT on the other debt family's tables.
+
+Strict shared query/body/path/auth/error contracts remain unchanged: missing `as_of` uses `422 required`, invalid date syntax/calendar uses `422 invalid_format`, and empty/duplicate/unknown/malformed query parameters, bare `?`, or non-empty bodies use `400`. Missing/invalid sessions use `401`; unsupported methods including HEAD/OPTIONS use `405` with `Allow: GET`. Responses use `Cache-Control: no-store` and request IDs. Pagination, contact, currency, account, tenant and identity overrides are rejected.
+
+Negative outstanding caused by privileged over-payment anywhere in the selected organization fails closed with safe `503`, including future-due debt. Missing schema, denied SELECT, dependency failures, and the existing five-second/request-cancellation deadline also use safe `503`. Financial/query input remains absent from application logs. Existing financial/membership SELECT plus identity/session permissions suffice; no financial writes or membership row-lock grants are needed.
+
+Existing schema through 00013, strict date validation, result fields/scanning, HTTP formatting and native SQL patterns are reused. No migration, dependency, configuration, test file, count query, contact breakdown, overdue list/filter, historical balance, or cached rollup is introduced. Reads aggregate history on demand; optimize only when measured latency requires it.
 
 ## Pagination
 

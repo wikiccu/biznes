@@ -9,7 +9,7 @@ import (
 	"github.com/wikiccu/biznes/internal/identity"
 )
 
-func getReceivableAging(service *finance.Service) gin.HandlerFunc {
+func getDebtAging(service *finance.Service, payable bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -20,7 +20,13 @@ func getReceivableAging(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetReceivableAging(c.Request.Context(), user.ID, organizationID, query.Get("as_of"))
+		var item finance.DebtAging
+		var err error
+		if payable {
+			item, err = service.GetPayableAging(c.Request.Context(), user.ID, organizationID, query.Get("as_of"))
+		} else {
+			item, err = service.GetReceivableAging(c.Request.Context(), user.ID, organizationID, query.Get("as_of"))
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return
