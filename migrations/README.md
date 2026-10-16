@@ -150,11 +150,21 @@ Apply the migration before deploying the routes. Existing populated domains, mig
 
 Grant instrument SELECT/INSERT, payable SELECT for new records, and existing identity/session/membership permissions including membership UPDATE for row locking on record/list. A column grant on membership role suffices for that lock. No instrument/payable UPDATE/DELETE, contact lock, allocation, reversal, transaction or financial account grant is needed. Current membership locks, native retry uniqueness and fresh winner reads preserve role/tenant/retry/provenance boundaries across replicas. Privileged direct SQL must retain application invariants.
 
-Rollback locks the instrument table and refuses any stored records, retaining schema/history atomically. Empty rollback drops only the new table/indexes with RESTRICT, preserving all prior data and reference constraints. Do not remove production instruments to force rollback; use a corrective migration. No dependency or setting changes are required. Incoming instruments and lifecycle/settlement follow separately.
+Rollback locks the instrument table and refuses any stored records, retaining schema/history atomically. Empty rollback drops only the new table/indexes with RESTRICT, preserving all prior data and reference constraints. Do not remove production instruments to force rollback; use a corrective migration. No dependency or setting changes are required. Incoming instruments use the separate 00015 migration below; lifecycle/settlement remain planned.
+
+## Incoming receivable instruments
+
+`00015_create_receivable_instruments.sql` introduces immutable API `biznes.receivable_instruments` with the same native row/retry/index/rollback invariants as outgoing instruments. Its restricted composite FK uses `receivables(organization_id,id,currency)` from 00012; no prior migration, constraint or outgoing table is changed. The DTO derives incoming/recorded metadata. Contact association follows the linked receivable. Apply 00015 explicitly before enabling incoming routes; upgrades retain populated outgoing and earlier financial records.
+
+Grant incoming instrument SELECT/INSERT, receivable SELECT for new records, and existing identity/session/membership permissions including membership row-lock permission for record/list. No outgoing-table/payable permission or financial mutation grant is needed. Shared concrete fields, validation/scanning and HTTP handling preserve family-specific JSON fields, while separate SQL and retry namespaces keep identical IDs/keys independent.
+
+Application recording bounds each instrument to original receivable amount without aggregate reservation or settlement. Native constraints enforce positive whole-Rial IRR amounts, kind/date/text/reference invariants and restricted ownership/creator links; privileged direct SQL must preserve cross-row application rules. Incoming intent never creates duplicate receivable/income/cash or collection allocations.
+
+Rollback takes an ACCESS EXCLUSIVE lock and refuses populated incoming instrument history, preserving schema/history atomically. Empty rollback drops only the new table/indexes with RESTRICT and retains outgoing instruments, receipt collections and all earlier data/reference keys. Do not delete production records to force rollback; use a corrective migration. No dependency or configuration setting is added.
 
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00015_add_instrument_metadata.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00016_add_instrument_cancellation_history.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

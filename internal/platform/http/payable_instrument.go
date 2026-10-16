@@ -10,46 +10,47 @@ import (
 	"github.com/wikiccu/biznes/internal/identity"
 )
 
-type publicPayableInstrument struct {
-	ID             string    `json:"id"`
-	OrganizationID string    `json:"organization_id"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	PayableID      string    `json:"payable_id"`
-	Kind           string    `json:"kind"`
-	Direction      string    `json:"direction"`
-	Status         string    `json:"status"`
-	Amount         string    `json:"amount"`
-	Currency       string    `json:"currency"`
-	DueDate        string    `json:"due_date"`
-	BankName       string    `json:"bank_name"`
-	Reference      string    `json:"reference"`
-	Description    string    `json:"description"`
-	CreatedBy      string    `json:"created_by"`
-	CreatedAt      time.Time `json:"created_at"`
+func instrumentDTO(item finance.Instrument, payable bool) gin.H {
+	debtField, direction := "receivable_id", "incoming"
+	if payable {
+		debtField, direction = "payable_id", "outgoing"
+	}
+	return gin.H{
+		"id": item.ID, "organization_id": item.OrganizationID, "idempotency_key": item.IdempotencyKey,
+		debtField: item.DebtID, "kind": item.Kind, "direction": direction, "status": "recorded",
+		"amount": strconv.FormatInt(item.Amount, 10), "currency": item.Currency,
+		"due_date": item.DueDate.Format(time.DateOnly), "bank_name": item.BankName, "reference": item.Reference,
+		"description": item.Description, "created_by": item.CreatedBy, "created_at": item.CreatedAt.UTC(),
+	}
 }
 
-func payableInstrumentDTO(item finance.PayableInstrument) publicPayableInstrument {
-	return publicPayableInstrument{item.ID, item.OrganizationID, item.IdempotencyKey, item.PayableID,
-		item.Kind, "outgoing", "recorded", strconv.FormatInt(item.Amount, 10), item.Currency,
-		item.DueDate.Format(time.DateOnly), item.BankName, item.Reference, item.Description, item.CreatedBy, item.CreatedAt.UTC()}
-}
-
-func recordPayableInstrument(service *finance.Service) gin.HandlerFunc {
+func recordInstrument(service *finance.Service, payable bool) gin.HandlerFunc {
+	debtField, route := "receivable_id", "receivable-instruments"
+	if payable {
+		debtField, route = "payable_id", "payable-instruments"
+	}
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
 			return
 		}
-		var input finance.PayableInstrumentInput
+		var input finance.InstrumentInput
 		if !jsonStringInput(c, map[string]*string{
-			"idempotency_key": &input.IdempotencyKey, "payable_id": &input.PayableID, "kind": &input.Kind,
+			"idempotency_key": &input.IdempotencyKey, debtField: &input.DebtID, "kind": &input.Kind,
 			"amount": &input.Amount, "currency": &input.Currency, "due_date": &input.DueDate,
 			"bank_name": &input.BankName, "reference": &input.Reference, "description": &input.Description,
 		}) {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, created, err := service.RecordPayableInstrument(c.Request.Context(), user.ID, organizationID, input)
+		var item finance.Instrument
+		var created bool
+		var err error
+		if payable {
+			item, created, err = service.RecordPayableInstrument(c.Request.Context(), user.ID, organizationID, input)
+		} else {
+			item, created, err = service.RecordReceivableInstrument(c.Request.Context(), user.ID, organizationID, input)
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return
@@ -59,12 +60,12 @@ func recordPayableInstrument(service *finance.Service) gin.HandlerFunc {
 			status = http.StatusCreated
 		}
 		c.Header("Cache-Control", "no-store")
-		c.Header("Location", "/api/v1/organizations/"+organizationID+"/payable-instruments/"+item.ID)
-		c.JSON(status, gin.H{"data": payableInstrumentDTO(item)})
+		c.Header("Location", "/api/v1/organizations/"+organizationID+"/"+route+"/"+item.ID)
+		c.JSON(status, gin.H{"data": instrumentDTO(item, payable)})
 	}
 }
 
-func getPayableInstrument(service *finance.Service) gin.HandlerFunc {
+func getInstrument(service *finance.Service, payable bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -75,17 +76,23 @@ func getPayableInstrument(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetPayableInstrument(c.Request.Context(), user.ID, organizationID, id)
+		var item finance.Instrument
+		var err error
+		if payable {
+			item, err = service.GetPayableInstrument(c.Request.Context(), user.ID, organizationID, id)
+		} else {
+			item, err = service.GetReceivableInstrument(c.Request.Context(), user.ID, organizationID, id)
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return
 		}
 		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusOK, gin.H{"data": payableInstrumentDTO(item)})
+		c.JSON(http.StatusOK, gin.H{"data": instrumentDTO(item, payable)})
 	}
 }
 
-func listPayableInstruments(service *finance.Service) gin.HandlerFunc {
+func listInstruments(service *finance.Service, payable bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -96,14 +103,20 @@ func listPayableInstruments(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		items, err := service.ListPayableInstruments(c.Request.Context(), user.ID, organizationID, page, limit)
+		var items []finance.Instrument
+		var err error
+		if payable {
+			items, err = service.ListPayableInstruments(c.Request.Context(), user.ID, organizationID, page, limit)
+		} else {
+			items, err = service.ListReceivableInstruments(c.Request.Context(), user.ID, organizationID, page, limit)
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return
 		}
-		data := make([]publicPayableInstrument, 0, len(items))
+		data := make([]gin.H, 0, len(items))
 		for _, item := range items {
-			data = append(data, payableInstrumentDTO(item))
+			data = append(data, instrumentDTO(item, payable))
 		}
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"page": page, "limit": limit}})

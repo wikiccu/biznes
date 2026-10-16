@@ -90,9 +90,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	payables.GET("/:payable_id/allocations/:allocation_id", emptyAuthRequest, getPayableAllocation(financeService))
 	payables.GET("/:payable_id/payment-summary", emptyAuthRequest, getPayablePaymentSummary(financeService))
 	instruments := organizations.Group("/:organization_id/payable-instruments")
-	instruments.POST("", recordPayableInstrument(financeService))
-	instruments.GET("", listPayableInstruments(financeService))
-	instruments.GET("/:instrument_id", emptyAuthRequest, getPayableInstrument(financeService))
+	instruments.POST("", recordInstrument(financeService, true))
+	instruments.GET("", listInstruments(financeService, true))
+	instruments.GET("/:instrument_id", emptyAuthRequest, getInstrument(financeService, true))
+	incomingInstruments := organizations.Group("/:organization_id/receivable-instruments")
+	incomingInstruments.POST("", recordInstrument(financeService, false))
+	incomingInstruments.GET("", listInstruments(financeService, false))
+	incomingInstruments.GET("/:instrument_id", emptyAuthRequest, getInstrument(financeService, false))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

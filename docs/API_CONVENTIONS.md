@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, outgoing payable instruments, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, outgoing payable and incoming receivable instruments, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -694,7 +694,45 @@ Shared strict 8 KiB JSON/media/UTF-8/field parsing, path UUID guards, empty read
 
 Migration `00014` adds native tenant/currency/payable/creator references, positive amount/kind/date/text constraints, retry uniqueness and stable/FK indexes. Existing migrations and financial recognition queries stay intact. Creation/listing lock current membership through their transaction; native key uniqueness and a fresh committed-winner read serialize matching/conflicting retries. Retrieval joins current membership. The API needs instrument SELECT/INSERT, payable SELECT for new records, and existing identity/session/membership permissions including membership row-lock permission for creation/listing. No UPDATE/DELETE on instruments or payables, contact mutation/locking, or account/transaction/settlement-table access is needed. Missing/denied schema, dependency failure and operation deadlines return safe `503`; partial responses and raw storage errors are not returned or logged.
 
-No update/delete/cancel/settle route, regional registration integration, bank account/chequebook, incoming instrument, reservation, cash forecast, notification, dependency or configuration setting is added. Lifecycle and settlement links require later explicit rules that preserve original debt/payment recognition.
+No update/delete/cancel/settle route, regional registration integration, bank account/chequebook, reservation, cash forecast, notification, dependency or configuration setting is added. Lifecycle and settlement links require later explicit rules that preserve original debt/payment recognition.
+
+## Incoming receivable instruments
+
+`POST /api/v1/organizations/:organization_id/receivable-instruments` records immutable incoming check intent linked to an existing same-tenant customer receivable. `GET` on that collection lists in stable `created_at, id` order with the existing `page` / `limit` defaults/caps and no extra selectors; `GET /api/v1/organizations/:organization_id/receivable-instruments/:instrument_id` retrieves one scoped record. Owner/admin/accountant members record/replay; every current member reads.
+
+The [outgoing instrument contract](#outgoing-payable-instruments) supplies the same strict body/media/path/query/name/date/exact-money rules, permissions, error/status behavior, no-store/request IDs, five-second/cancellation boundaries, matching/conflicting retry behavior and recorded-intent limits. The required parent field is `receivable_id`, in place of `payable_id`. POST accepts exactly `idempotency_key`, `receivable_id`, `kind`, `amount`, `currency`, `due_date`, `bank_name`, `reference` and optional `description`. Parent validation details use `receivable_id` in the same ordered position. Kind remains `check`; direction/status/tenant/contact/creator/time overrides and payable selectors are rejected.
+
+Responses contain exactly fifteen fields, substituting `receivable_id` and `direction: incoming` while preserving `status: recorded` and the other metadata:
+
+```json
+{
+  "data": {
+    "id": "8c359a75-5664-475e-9b32-e742ff8fe56f",
+    "organization_id": "34023142-a6e3-46cb-ae51-0a8b607d0221",
+    "idempotency_key": "e5e27acd-ebf4-4fae-9913-a1e3737191d3",
+    "receivable_id": "272aa668-3b12-4ec1-b5dc-40a9216ee2b2",
+    "kind": "check",
+    "direction": "incoming",
+    "status": "recorded",
+    "amount": "25000000",
+    "currency": "IRR",
+    "due_date": "2026-10-31",
+    "bank_name": "Example Bank",
+    "reference": "CHK-001",
+    "description": "Customer check",
+    "created_by": "82018312-dc98-4a67-be7e-3fd1db223e32",
+    "created_at": "2026-10-16T09:30:00Z"
+  }
+}
+```
+
+New intent returns `201` with its receivable-instrument Location; matching authorized retries return `200` and preserve the first resource/creator/time. Changed valid input with the organization/key uses `409`. Unknown/inaccessible organization, instrument or receivable references use generic `404`; staff write/replay uses `403`. The parent supplies contact and currency association. Each new amount is bounded to the original receivable amount, independently of current collections, and uses its own due date. The cross-row original-amount bound is enforced in the application over immutable API originals. Multiple instruments, including intent on fully collected receivables, do not reserve amounts or promise collection. Contact reclassification and later receipt voids preserve matching intent.
+
+Recording does not create another receivable, income/cash transaction or collection allocation, or change aging/upcoming/activity totals. Only existing income allocations/full-void recognition affect outstanding. Bank/reference metadata is opaque and unverified; recorded intent does not establish custody, deposit, clearance, payer association or actual cash.
+
+Migration `00015` adds a separate `receivable_instruments` table with restricted tenant/currency/receivable/creator references, exact positive amount/kind/date/text constraints, independent retry uniqueness, stable/FK indexes and guarded rollback. It reuses the receivable reference key from 00012 and does not alter outgoing storage or previous migrations. Shared concrete instrument fields, input validation/scanning and HTTP formatting use explicit family fields; actual queries and table permissions remain separate. Identical incoming/outgoing IDs and keys must resolve independently. The existing outgoing `payable_id`, `direction: outgoing`, metadata, retry/recognition and error contracts stay intact.
+
+New recording requires receivable SELECT and instrument SELECT/INSERT plus existing identity/session/membership permissions, including membership lock permission for creation/listing. Retrieval joins membership. No outgoing instrument/payable SELECT, financial UPDATE/DELETE, contact lock, transaction or allocation grants are required. Missing/denied required schema and dependency failures use safe `503` with recovery after restoration. Instrument update/delete/cancel/settle, bank integration, reservation, forecasting and notification workflows remain planned; no dependency or configuration setting is added.
 
 ## Pagination
 
