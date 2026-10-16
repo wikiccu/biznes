@@ -154,7 +154,7 @@ Rollback locks the instrument table and refuses any stored records, retaining sc
 
 ## Incoming receivable instruments
 
-`00015_create_receivable_instruments.sql` introduces immutable API `biznes.receivable_instruments` with the same native row/retry/index/rollback invariants as outgoing instruments. Its restricted composite FK uses `receivables(organization_id,id,currency)` from 00012; no prior migration, constraint or outgoing table is changed. The DTO derives incoming/recorded metadata. Contact association follows the linked receivable. Apply 00015 explicitly before enabling incoming routes; upgrades retain populated outgoing and earlier financial records.
+`00015_create_receivable_instruments.sql` introduces immutable API `biznes.receivable_instruments` with the same native row/retry/index/rollback invariants as outgoing instruments. Its restricted composite FK uses `receivables(organization_id,id,currency)` from 00012; no prior migration, constraint or outgoing table is changed. Direction is incoming; current recorded/canceled status derives from separate 00017 cancellation history. Contact association follows the linked receivable. Apply 00015 explicitly before enabling incoming routes; upgrades retain populated outgoing and earlier financial records.
 
 Grant incoming instrument SELECT/INSERT, receivable SELECT for new records, and existing identity/session/membership permissions including membership row-lock permission for record/list. No outgoing-table/payable permission or financial mutation grant is needed. Shared concrete fields, validation/scanning and HTTP handling preserve family-specific JSON fields, while separate SQL and retry namespaces keep identical IDs/keys independent.
 
@@ -168,13 +168,23 @@ Rollback takes an ACCESS EXCLUSIVE lock and refuses populated incoming instrumen
 
 Apply 00016 and grant cancellation SELECT to updated outgoing readers before deploying them. Cancellation writers additionally require cancellation INSERT and instrument SELECT, plus existing identity/session/membership locking permissions. Original instrument writers retain their existing insert/parent-read permissions. No cancellation/instrument UPDATE/DELETE or other financial mutation grant is needed. Membership locks and native uniqueness with fresh winner reads preserve authorized retry/provenance under races; cancellation is intent-only and does not participate in transaction recognition.
 
-Outgoing get/list/record retries now derive recorded/canceled status with a same-tenant EXISTS in their statement snapshot. Incoming scanners add a constant recorded status and require no cancellation-table access. Upgrade all readers before enabling cancellation traffic; older binaries always report recorded. Missing schema or SELECT fails closed instead of reporting fabricated status.
+Outgoing get/list/record retries now derive recorded/canceled status with a same-tenant EXISTS in their statement snapshot. Incoming status uses separate 00017 history and requires no outgoing-cancellation access. Upgrade all readers before enabling cancellation traffic; older binaries always report recorded. Missing schema or SELECT fails closed instead of reporting fabricated status.
 
-Rollback locks cancellation storage and refuses any stored history. Empty rollback drops only the cancellation table/indexes with RESTRICT, preserving original instruments and every prior financial domain/reference key. Roll back updated readers before dropping their required table. Failures retain schema/history atomically; do not remove production cancellations to force rollback. Bank cancellation, correction/undo, incoming cancellation and settlement remain separate workflows. No dependency or setting is added.
+Rollback locks cancellation storage and refuses any stored history. Empty rollback drops only the cancellation table/indexes with RESTRICT, preserving original instruments and every prior financial domain/reference key. Roll back updated readers before dropping their required table. Failures retain schema/history atomically; do not remove production cancellations to force rollback. Bank cancellation, correction/undo and settlement remain separate workflows; incoming cancellation uses 00017 below. No dependency or setting is added.
+
+## Incoming instrument cancellations
+
+`00017_create_receivable_instrument_cancellations.sql` adds immutable incoming cancellation history with restricted incoming-instrument/creator links, composite tenant/resource keys, native one-per-target and organization/key uniqueness, bounded nonblank/control-free reason, creation time and creator index. It mirrors 00016's storage invariants without editing prior migrations or outgoing tables. Shared concrete input/fields/scanning and HTTP handling preserve the two families' contract; queries and key namespaces remain separate.
+
+Apply 00017 and grant incoming cancellation SELECT before deploying updated incoming readers. Writers additionally require incoming cancellation INSERT and incoming instrument SELECT, plus existing identity/session/membership locking permissions. Original record writers retain their existing insert/parent-read grants. No outgoing-table or financial mutation permission is needed. Upgrade incoming readers before enabling cancellation traffic; earlier readers report recorded rather than canceled for incoming records. Missing/denied storage fails closed with safe 503 while outgoing history/status remains independent.
+
+Incoming get/list/record retries now derive recorded/canceled from same-tenant incoming cancellation EXISTS in their statement snapshot. Metadata, receipts, collection allocations, reversals and financial reports remain unchanged. Recording intent establishes no bank, custody, deposit or cash effect.
+
+Rollback takes an ACCESS EXCLUSIVE lock and refuses populated cancellation history, preserving schema/history atomically. Empty rollback drops only incoming cancellation storage/indexes with RESTRICT and preserves outgoing cancellations, all original instruments and financial domains. Coordinate reader rollback before dropping their required table. Do not remove production history to force rollback; use a corrective migration. No dependency or setting is added.
 
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00017_create_receivable_instrument_cancellations.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00018_add_instrument_settlement_links.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

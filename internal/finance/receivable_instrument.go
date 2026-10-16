@@ -32,7 +32,9 @@ func (s *Service) RecordReceivableInstrument(ctx context.Context, userID, organi
 		return Instrument{}, false, organization.ErrForbidden
 	}
 	item, err := scanInstrument(tx.QueryRow(ctx, `SELECT id, organization_id, idempotency_key, receivable_id, kind,
-		amount, currency, due_date, bank_name, reference, description, created_by, created_at, 'recorded'::text
+		amount, currency, due_date, bank_name, reference, description, created_by, created_at, CASE WHEN EXISTS (SELECT 1 FROM biznes.receivable_instrument_cancellations c
+			WHERE c.organization_id = receivable_instruments.organization_id AND c.instrument_id = receivable_instruments.id)
+			THEN 'canceled' ELSE 'recorded' END
 		FROM biznes.receivable_instruments WHERE organization_id = $1 AND idempotency_key = $2`,
 		organizationID, input.IdempotencyKey))
 	created := false
@@ -62,7 +64,9 @@ func (s *Service) RecordReceivableInstrument(ctx context.Context, userID, organi
 		if errors.Is(err, pgx.ErrNoRows) {
 			// A fresh statement observes the committed retry winner across replicas.
 			item, err = scanInstrument(tx.QueryRow(ctx, `SELECT id, organization_id, idempotency_key, receivable_id, kind,
-				amount, currency, due_date, bank_name, reference, description, created_by, created_at, 'recorded'::text
+				amount, currency, due_date, bank_name, reference, description, created_by, created_at, CASE WHEN EXISTS (SELECT 1 FROM biznes.receivable_instrument_cancellations c
+			WHERE c.organization_id = receivable_instruments.organization_id AND c.instrument_id = receivable_instruments.id)
+			THEN 'canceled' ELSE 'recorded' END
 				FROM biznes.receivable_instruments WHERE organization_id = $1 AND idempotency_key = $2`,
 				organizationID, input.IdempotencyKey))
 		}
@@ -89,7 +93,9 @@ func (s *Service) GetReceivableInstrument(ctx context.Context, userID, organizat
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	item, err := scanInstrument(s.pool.QueryRow(ctx, `SELECT i.id, i.organization_id, i.idempotency_key, i.receivable_id, i.kind,
-		i.amount, i.currency, i.due_date, i.bank_name, i.reference, i.description, i.created_by, i.created_at, 'recorded'::text
+		i.amount, i.currency, i.due_date, i.bank_name, i.reference, i.description, i.created_by, i.created_at, CASE WHEN EXISTS (SELECT 1 FROM biznes.receivable_instrument_cancellations c
+			WHERE c.organization_id = i.organization_id AND c.instrument_id = i.id)
+			THEN 'canceled' ELSE 'recorded' END
 		FROM biznes.receivable_instruments i JOIN biznes.memberships m ON m.organization_id = i.organization_id
 		WHERE i.organization_id = $1 AND i.id = $2 AND m.user_id = $3`, organizationID, instrumentID, userID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -116,7 +122,9 @@ func (s *Service) ListReceivableInstruments(ctx context.Context, userID, organiz
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `SELECT id, organization_id, idempotency_key, receivable_id, kind,
-		amount, currency, due_date, bank_name, reference, description, created_by, created_at, 'recorded'::text
+		amount, currency, due_date, bank_name, reference, description, created_by, created_at, CASE WHEN EXISTS (SELECT 1 FROM biznes.receivable_instrument_cancellations c
+			WHERE c.organization_id = receivable_instruments.organization_id AND c.instrument_id = receivable_instruments.id)
+			THEN 'canceled' ELSE 'recorded' END
 		FROM biznes.receivable_instruments WHERE organization_id = $1 ORDER BY created_at, id LIMIT $2 OFFSET $3`,
 		organizationID, limit, (page-1)*limit)
 	if err != nil {

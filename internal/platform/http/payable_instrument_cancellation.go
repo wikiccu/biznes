@@ -23,7 +23,11 @@ func instrumentCancellationDTO(item finance.InstrumentCancellation) publicInstru
 	return publicInstrumentCancellation{item.ID, item.OrganizationID, item.InstrumentID, item.IdempotencyKey, item.Reason, item.CreatedBy, item.CreatedAt.UTC()}
 }
 
-func cancelPayableInstrument(service *finance.Service) gin.HandlerFunc {
+func cancelInstrument(service *finance.Service, payable bool) gin.HandlerFunc {
+	route := "receivable-instruments"
+	if payable {
+		route = "payable-instruments"
+	}
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -38,7 +42,14 @@ func cancelPayableInstrument(service *finance.Service) gin.HandlerFunc {
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, created, err := service.CancelPayableInstrument(c.Request.Context(), user.ID, organizationID, instrumentID, input)
+		var item finance.InstrumentCancellation
+		var created bool
+		var err error
+		if payable {
+			item, created, err = service.CancelPayableInstrument(c.Request.Context(), user.ID, organizationID, instrumentID, input)
+		} else {
+			item, created, err = service.CancelReceivableInstrument(c.Request.Context(), user.ID, organizationID, instrumentID, input)
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return
@@ -48,12 +59,12 @@ func cancelPayableInstrument(service *finance.Service) gin.HandlerFunc {
 			status = http.StatusCreated
 		}
 		c.Header("Cache-Control", "no-store")
-		c.Header("Location", "/api/v1/organizations/"+organizationID+"/payable-instruments/"+instrumentID+"/cancellation")
+		c.Header("Location", "/api/v1/organizations/"+organizationID+"/"+route+"/"+instrumentID+"/cancellation")
 		c.JSON(status, gin.H{"data": instrumentCancellationDTO(item)})
 	}
 }
 
-func getPayableInstrumentCancellation(service *finance.Service) gin.HandlerFunc {
+func getInstrumentCancellation(service *finance.Service, payable bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -64,7 +75,13 @@ func getPayableInstrumentCancellation(service *finance.Service) gin.HandlerFunc 
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetPayableInstrumentCancellation(c.Request.Context(), user.ID, organizationID, instrumentID)
+		var item finance.InstrumentCancellation
+		var err error
+		if payable {
+			item, err = service.GetPayableInstrumentCancellation(c.Request.Context(), user.ID, organizationID, instrumentID)
+		} else {
+			item, err = service.GetReceivableInstrumentCancellation(c.Request.Context(), user.ID, organizationID, instrumentID)
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return

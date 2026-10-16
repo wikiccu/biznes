@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, outgoing payable and incoming receivable instruments, outgoing instrument cancellation history, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, outgoing payable and incoming receivable instruments, outgoing/incoming instrument cancellation history, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -702,7 +702,7 @@ Cancellation history is described below. No metadata update/delete/settle route,
 
 The [outgoing instrument contract](#outgoing-payable-instruments) supplies the same strict body/media/path/query/name/date/exact-money rules, permissions, error/status behavior, no-store/request IDs, five-second/cancellation boundaries, matching/conflicting retry behavior and recorded-intent limits. The required parent field is `receivable_id`, in place of `payable_id`. POST accepts exactly `idempotency_key`, `receivable_id`, `kind`, `amount`, `currency`, `due_date`, `bank_name`, `reference` and optional `description`. Parent validation details use `receivable_id` in the same ordered position. Kind remains `check`; direction/status/tenant/contact/creator/time overrides and payable selectors are rejected.
 
-Responses contain exactly fifteen fields, substituting `receivable_id` and `direction: incoming` while preserving `status: recorded` and the other metadata:
+Responses contain exactly fifteen fields, substituting `receivable_id` and `direction: incoming`. Status now derives recorded/canceled from incoming cancellation history below; the other metadata stays intact:
 
 ```json
 {
@@ -732,11 +732,11 @@ Recording does not create another receivable, income/cash transaction or collect
 
 Migration `00015` adds a separate `receivable_instruments` table with restricted tenant/currency/receivable/creator references, exact positive amount/kind/date/text constraints, independent retry uniqueness, stable/FK indexes and guarded rollback. It reuses the receivable reference key from 00012 and does not alter outgoing storage or previous migrations. Shared concrete instrument fields, input validation/scanning and HTTP formatting use explicit family fields; actual queries and table permissions remain separate. Identical incoming/outgoing IDs and keys must resolve independently. The existing outgoing `payable_id`, `direction: outgoing`, metadata, retry/recognition and error contracts stay intact.
 
-New recording requires receivable SELECT and instrument SELECT/INSERT plus existing identity/session/membership permissions, including membership lock permission for creation/listing. Retrieval joins membership. No outgoing instrument/payable SELECT, financial UPDATE/DELETE, contact lock, transaction or allocation grants are required. Missing/denied required schema and dependency failures use safe `503` with recovery after restoration. Instrument update/delete/cancel/settle, bank integration, reservation, forecasting and notification workflows remain planned; no dependency or configuration setting is added.
+New recording requires receivable SELECT and instrument SELECT/INSERT plus existing identity/session/membership permissions, including membership lock permission for creation/listing. Retrieval joins membership. No outgoing instrument/payable SELECT, financial UPDATE/DELETE, contact lock, transaction or allocation grants are required. Missing/denied required schema and dependency failures use safe `503` with recovery after restoration. Instrument metadata update/delete/settle, bank integration, reservation, forecasting and notification workflows remain planned; no dependency or configuration setting is added.
 
 ## Outgoing instrument cancellations
 
-`POST /api/v1/organizations/:organization_id/payable-instruments/:instrument_id/cancellation` appends one immutable cancellation-intent record. `GET` on that path reads it. Owner/admin/accountant members submit/replay; every current member reads. A known instrument without cancellation, unknown/inaccessible organization or instrument, and absent cancellation use generic `404`. Staff submission/replay uses `403`. Incoming instrument cancellation is not implemented.
+`POST /api/v1/organizations/:organization_id/payable-instruments/:instrument_id/cancellation` appends one immutable cancellation-intent record. `GET` on that path reads it. Owner/admin/accountant members submit/replay; every current member reads. A known instrument without cancellation, unknown/inaccessible organization or instrument, and absent cancellation use generic `404`. Staff submission/replay uses `403`. Incoming cancellation uses the separate contract below.
 
 POST accepts only string `idempotency_key` and `reason`. Existing reversal reason/key validation is reused without changing transaction reversals: canonical lowercase UUID shape; trimmed, non-empty reason of at most 2000 Unicode characters; invalid UTF-8 and every control character, including LF/CR/tab, rejected. Ordered `422` details are key then reason, with existing `required` / `invalid_format` / `out_of_range` codes. Shared strict 8 KiB JSON/media/query/path/session parsing rejects unknown, duplicate, null, non-string or server-owned fields. POST/get accept no query parameters; get requires an empty body.
 
@@ -763,7 +763,7 @@ New cancellation returns `201` and the cancellation path in `Location`; matching
 }
 ```
 
-Cancellation DTOs contain exactly those seven fields. Outgoing instrument DTOs retain their fifteen fields; `status` is `canceled` when a same-tenant cancellation exists and `recorded` otherwise. Original get/list and matching record retries derive metadata/status in one SQL statement snapshot. Newly inserted instrument responses start recorded. Separate requests may observe different commits; pagination/order and inclusion of all original records are unchanged. No status filter or deletion of canceled records is added. Incoming instrument DTOs remain incoming/recorded and require no cancellation-table permission.
+Cancellation DTOs contain exactly those seven fields. Outgoing instrument DTOs retain their fifteen fields; `status` is `canceled` when a same-tenant cancellation exists and `recorded` otherwise. Original get/list and matching record retries derive metadata/status in one SQL statement snapshot. Newly inserted instrument responses start recorded. Separate requests may observe different commits; pagination/order and inclusion of all original records are unchanged. No status filter or deletion of canceled records is added. Incoming instrument DTOs derive status through separate incoming history and require no outgoing-cancellation permission.
 
 Cancellation only appends intent/history; it does not mutate the original instrument, payable, expense, payment allocation or reversal. It sends no bank instruction and asserts no effective stop-payment, clearance, settlement, reserved capacity or actual cash effect. Payment/outstanding/aging/upcoming/activity recognition remains based on existing expense allocations/full voids. Cancellation does not reopen a paid payable or undo a transaction reversal. Correction/undo and settlement coordination require later explicit workflows.
 
@@ -771,7 +771,37 @@ Migration `00016` creates `payable_instrument_cancellations` with composite tena
 
 Cancellation writes need cancellation SELECT/INSERT, instrument SELECT and existing identity/session/membership permissions, including membership row-lock permission. Cancellation get needs cancellation/membership SELECT plus authentication permissions. All updated outgoing instrument readers/record retries now need cancellation SELECT to derive status; original new-record permissions remain required. No financial UPDATE/DELETE, bank/contact/account, payable, allocation, transaction or reversal grant is needed for cancellation itself. Missing/denied cancellation schema or deadline failures return safe `503`, including outgoing status reads, rather than fabricated recorded status. Incoming reads remain independent. Existing five-second/request-cancellation boundaries, no-store/request IDs and private structured logs apply. Unsupported methods including HEAD/OPTIONS use `405` with `Allow: GET, POST`.
 
-Apply 00016 and grants before deploying updated outgoing readers, and upgrade all readers before enabling cancellation traffic; older binaries always report recorded status. Empty rollback drops only cancellation storage and requires coordinated reader rollback, while populated rollback refuses to remove history atomically. No dependency, configuration setting, incoming cancellation, settlement, notification or bank integration is added.
+Apply 00016 and grants before deploying updated outgoing readers, and upgrade all readers before enabling cancellation traffic; older binaries always report recorded status. Empty rollback drops only cancellation storage and requires coordinated reader rollback, while populated rollback refuses to remove history atomically. No dependency, configuration setting, settlement, notification or bank integration is added.
+
+## Incoming instrument cancellations
+
+`POST /api/v1/organizations/:organization_id/receivable-instruments/:instrument_id/cancellation` appends one immutable incoming cancellation-intent record; `GET` on that path reads it. Owner/admin/accountant members submit/replay and every current member reads. The [outgoing cancellation contract](#outgoing-instrument-cancellations) supplies the same strict two-string `idempotency_key` / `reason` body, trimmed nonempty/control-free 2000-character reason, canonical key validation, ordered field errors, auth/role/method/query/body/path rules, deadlines, no-store/request IDs, and safe errors.
+
+New intent returns `201` and the incoming cancellation path in `Location`; matching authorized retries return `200` with the first cancellation ID, trimmed reason, creator and UTC creation time. Native organization/instrument and organization/key uniqueness enforce one cancellation per target and independent retry identity across replicas. Changed target/key/reason conflicts use `409`; absent cancellation or unknown/inaccessible scope/target uses generic `404`; staff write/replay uses `403`.
+
+```json
+{
+  "data": {
+    "id": "8c359a75-5664-475e-9b32-e742ff8fe56f",
+    "organization_id": "34023142-a6e3-46cb-ae51-0a8b607d0221",
+    "instrument_id": "272aa668-3b12-4ec1-b5dc-40a9216ee2b2",
+    "idempotency_key": "e5e27acd-ebf4-4fae-9913-a1e3737191d3",
+    "reason": "Customer replaced instrument",
+    "created_by": "82018312-dc98-4a67-be7e-3fd1db223e32",
+    "created_at": "2026-10-16T09:30:00Z"
+  }
+}
+```
+
+Cancellation DTOs contain exactly those seven fields. Incoming instrument DTOs retain their fifteen fields and derive `status: canceled` when a same-tenant incoming cancellation exists, or `recorded` otherwise. Get/list/matching record retries compute metadata/status within their statement snapshot; newly inserted originals start recorded. Pagination, ordering and inclusion of all original records remain unchanged, and separate requests may observe different commits. Cancellation does not mutate the original metadata, receivable, income receipt, collection allocation or reversal, and does not change collection/outstanding/aging/upcoming/activity totals.
+
+The intent does not establish actual bank cancellation, returned custody, deposit/clearance, released capacity or available cash. It neither reverses an income transaction nor reopens a collected receivable; existing income allocation/full-void recognition continues to govern balances. Correction/undo and settlement coordination remain separate workflows.
+
+Migration `00017` adds `receivable_instrument_cancellations` with the same native row/reference/retry/rollback invariants as outgoing cancellation storage, referencing only same-tenant incoming instruments and creator history. Input validation, concrete fields/scanning, errors and HTTP DTOs/handling are shared, while SQL, storage, key namespaces and permissions remain separate. Identical instrument/cancellation IDs and retry keys across incoming/outgoing families remain independent. Existing populated outgoing cancellation history, outgoing status/JSON/retry behavior and financial SQL stay intact.
+
+Incoming cancellation writes need incoming cancellation SELECT/INSERT, incoming instrument SELECT and existing identity/session/membership locking permissions. Cancellation get requires its cancellation/membership SELECT plus authentication. Updated incoming original readers/retries now require incoming cancellation SELECT; new-record permissions remain required. No outgoing table, receivable, transaction, collection or financial mutation grant is needed for cancellation itself. Missing/denied required cancellation storage, deadline or dependency failure uses safe `503`, including incoming status reads, rather than invented recorded status. Outgoing reads do not depend on incoming cancellation storage.
+
+Apply 00017 and grants before deploying updated incoming readers; upgrade readers before enabling incoming cancellation traffic because earlier binaries always report recorded status for incoming instruments. Populated rollback refuses to remove cancellation history atomically. Empty rollback drops only incoming cancellation storage and requires coordinated reader rollback, retaining outgoing history and all financial records. No dependency, configuration setting, status filter, deletion, settlement, notification or bank action is added.
 
 ## Pagination
 

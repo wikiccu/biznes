@@ -93,12 +93,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	instruments.POST("", recordInstrument(financeService, true))
 	instruments.GET("", listInstruments(financeService, true))
 	instruments.GET("/:instrument_id", emptyAuthRequest, getInstrument(financeService, true))
-	instruments.POST("/:instrument_id/cancellation", cancelPayableInstrument(financeService))
-	instruments.GET("/:instrument_id/cancellation", emptyAuthRequest, getPayableInstrumentCancellation(financeService))
+	instruments.POST("/:instrument_id/cancellation", cancelInstrument(financeService, true))
+	instruments.GET("/:instrument_id/cancellation", emptyAuthRequest, getInstrumentCancellation(financeService, true))
 	incomingInstruments := organizations.Group("/:organization_id/receivable-instruments")
 	incomingInstruments.POST("", recordInstrument(financeService, false))
 	incomingInstruments.GET("", listInstruments(financeService, false))
 	incomingInstruments.GET("/:instrument_id", emptyAuthRequest, getInstrument(financeService, false))
+	incomingInstruments.POST("/:instrument_id/cancellation", cancelInstrument(financeService, false))
+	incomingInstruments.GET("/:instrument_id/cancellation", emptyAuthRequest, getInstrumentCancellation(financeService, false))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
