@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -559,6 +559,50 @@ Strict shared query/body/path/auth/error contracts remain unchanged: missing `as
 Negative outstanding caused by privileged over-payment anywhere in the selected organization fails closed with safe `503`, including future-due debt. Missing schema, denied SELECT, dependency failures, and the existing five-second/request-cancellation deadline also use safe `503`. Financial/query input remains absent from application logs. Existing financial/membership SELECT plus identity/session permissions suffice; no financial writes or membership row-lock grants are needed.
 
 Existing schema through 00013, strict date validation, result fields/scanning, HTTP formatting and native SQL patterns are reused. No migration, dependency, configuration, test file, count query, contact breakdown, overdue list/filter, historical balance, or cached rollup is introduced. Reads aggregate history on demand; optimize only when measured latency requires it.
+
+## Upcoming unpaid payables
+
+`GET /api/v1/organizations/:organization_id/payables/upcoming?due_from=2026-10-16&due_to=2026-10-31` lists recorded supplier obligations with positive current outstanding within a chosen due-date range. Every current member, including staff, reads. The static `/upcoming` route is separate from original payable retrieval, listing, payment summaries and aging; those contracts remain unchanged.
+
+Only `due_from`, `due_to`, `page` and `limit` are supported. Both date bounds are required strict Gregorian `YYYY-MM-DD` values within years 0001–9999, using shared date validation. Bounds are inclusive and ordered: `due_from <= due_to`. Equal bounds select a single calendar day, including `9999-12-31`. Missing bounds use `422 required` with ordered field details; malformed dates use `invalid_format`; reversed bounds use `due_to / invalid_range`. The caller chooses the window appropriate to its business; there is no current-day, timezone, or future-only clock default, and past dates remain valid selectors.
+
+Existing strict query/body parsing rejects unknown/duplicate/empty/malformed parameters, bare `?` and non-empty bodies with `400`. Page (1–10000) and limit (1–100) retain defaults 1/20 and the existing structural `400` versus semantic `422` rules. Timestamp, contact, account, currency, tenant, identity and other selectors are rejected.
+
+Items contain exactly `payable_id`, `contact_id`, decimal-string original `amount`, `currency`, date-only `due_date`, and decimal-string `paid_amount` / `outstanding_amount`. Original metadata/provenance remains available from the ordinary payable retrieval route. `meta` contains `organization_id`, `due_from`, `due_to`, `basis: "current_recorded_allocations"`, and integer `page` / `limit`. No count query or total count is added.
+
+```json
+{
+  "data": [
+    {
+      "payable_id": "e5e27acd-ebf4-4fae-9913-a1e3737191d3",
+      "contact_id": "272aa668-3b12-4ec1-b5dc-40a9216ee2b2",
+      "amount": "85000000",
+      "currency": "IRR",
+      "due_date": "2026-10-20",
+      "paid_amount": "25000000",
+      "outstanding_amount": "60000000"
+    }
+  ],
+  "meta": {
+    "organization_id": "34023142-a6e3-46cb-ae51-0a8b607d0221",
+    "due_from": "2026-10-16",
+    "due_to": "2026-10-31",
+    "basis": "current_recorded_allocations",
+    "page": 1,
+    "limit": 20
+  }
+}
+```
+
+Current paid amount sums unreversed payment allocations with exact NUMERIC arithmetic; outstanding is original debt minus paid, converted directly to decimal text. Full expense voids reopen the affected payable without altering originals/history or creating expense/cash. Fully paid obligations are excluded before pagination. Results order by `due_date, id`; ties use the unique payable ID rather than creation time. A page beyond available results or a known empty range/organization returns `200` with `data: []` and echoed metadata.
+
+Date bounds filter due days only. Current allocations and reversals affect balances regardless of recording/occurred date, so the endpoint does not reconstruct a historical or predicted balance, verify a recipient, establish actual cash position, or assert completeness of imported history. It introduces no overdue/status mutation or currency conversion; current supported amounts are whole-Rial IRR.
+
+Membership, selected range balances, integrity checks and pagination use one statement snapshot. A negative outstanding obligation anywhere in the selected date range fails closed with safe `503`, including records outside the requested page; records outside the date range do not affect the selection. Missing/denied financial schema, dependency failures, and the existing five-second/request-cancellation deadline also return safe `503` rather than partial or fabricated results. Separate requests can observe different commits, so pages do not share a snapshot.
+
+Unknown/inaccessible organizations use generic `404`. Malformed organization UUIDs use `400`, missing/invalid sessions use `401`, and unsupported methods including HEAD/OPTIONS use `405` with `Allow: GET`. Responses use `Cache-Control: no-store` and request IDs. Financial values and query input remain absent from logs.
+
+Existing financial/membership SELECT plus identity/session permissions suffice, without financial writes, membership row-lock grants, or SELECT on contacts/transactions/receivable tables. Existing schema through 00013 and strict query/date/error patterns are reused. No migration, dependency, configuration, test file, cached balances, default window, or general check/obligation settlement workflow is added. Range balances are computed on demand; add an index or rollup only if measured latency requires it.
 
 ## Pagination
 
