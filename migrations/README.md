@@ -150,7 +150,7 @@ Apply the migration before deploying the routes. Existing populated domains, mig
 
 Grant instrument SELECT/INSERT, payable SELECT for new records, and existing identity/session/membership permissions including membership UPDATE for row locking on record/list. A column grant on membership role suffices for that lock. No instrument/payable UPDATE/DELETE, contact lock, allocation, reversal, transaction or financial account grant is needed. Current membership locks, native retry uniqueness and fresh winner reads preserve role/tenant/retry/provenance boundaries across replicas. Privileged direct SQL must retain application invariants.
 
-Rollback locks the instrument table and refuses any stored records, retaining schema/history atomically. Empty rollback drops only the new table/indexes with RESTRICT, preserving all prior data and reference constraints. Do not remove production instruments to force rollback; use a corrective migration. No dependency or setting changes are required. Incoming instruments use the separate 00015 migration below; lifecycle/settlement remain planned.
+Rollback locks the instrument table and refuses any stored records, retaining schema/history atomically. Empty rollback drops only the new table/indexes with RESTRICT, preserving all prior data and reference constraints. Do not remove production instruments to force rollback; use a corrective migration. No dependency or setting changes are required. Incoming instruments use the separate 00015 migration below; cancellation and outgoing settlement use the later migrations below.
 
 ## Incoming receivable instruments
 
@@ -166,11 +166,11 @@ Rollback takes an ACCESS EXCLUSIVE lock and refuses populated incoming instrumen
 
 `00016_create_payable_instrument_cancellations.sql` appends cancellation intent/history without altering instrument or financial rows. Composite organization/resource keys, restricted instrument/creator references, independent organization/key uniqueness, one cancellation per organization/instrument, required bounded nonblank/control-free reason, native creation time and a creator index follow the reversal pattern. No amount or duplicate debt/cash data is stored. The instrument unique key supports indexed status lookups.
 
-Apply 00016 and grant cancellation SELECT to updated outgoing readers before deploying them. Cancellation writers additionally require cancellation INSERT and instrument SELECT, plus existing identity/session/membership locking permissions. Original instrument writers retain their existing insert/parent-read permissions. No cancellation/instrument UPDATE/DELETE or other financial mutation grant is needed. Membership locks and native uniqueness with fresh winner reads preserve authorized retry/provenance under races; cancellation is intent-only and does not participate in transaction recognition.
+Apply 00016 and grant cancellation SELECT to updated outgoing readers before deploying them. Cancellation writers additionally require cancellation INSERT and instrument SELECT, plus existing identity/session/membership locking permissions. Original instrument writers retain their existing insert/parent-read permissions. No cancellation/instrument UPDATE/DELETE or other financial mutation grant is needed. Membership locks and native uniqueness with fresh winner reads preserve authorized retry/provenance under races; cancellation is intent-only and does not participate in transaction recognition. Since 00018, outgoing cancellation writers additionally need settlement SELECT and share the instrument lock/history exclusion described below.
 
 Outgoing get/list/record retries now derive recorded/canceled status with a same-tenant EXISTS in their statement snapshot. Incoming status uses separate 00017 history and requires no outgoing-cancellation access. Upgrade all readers before enabling cancellation traffic; older binaries always report recorded. Missing schema or SELECT fails closed instead of reporting fabricated status.
 
-Rollback locks cancellation storage and refuses any stored history. Empty rollback drops only the cancellation table/indexes with RESTRICT, preserving original instruments and every prior financial domain/reference key. Roll back updated readers before dropping their required table. Failures retain schema/history atomically; do not remove production cancellations to force rollback. Bank cancellation, correction/undo and settlement remain separate workflows; incoming cancellation uses 00017 below. No dependency or setting is added.
+Rollback locks cancellation storage and refuses any stored history. Empty rollback drops only the cancellation table/indexes with RESTRICT, preserving original instruments and every prior financial domain/reference key. Roll back updated readers before dropping their required table. Failures retain schema/history atomically; do not remove production cancellations to force rollback. Bank cancellation and correction/undo remain separate workflows; incoming cancellation uses 00017 and outgoing settlement uses 00018 below. No dependency or setting is added.
 
 ## Incoming instrument cancellations
 
@@ -182,9 +182,19 @@ Incoming get/list/record retries now derive recorded/canceled from same-tenant i
 
 Rollback takes an ACCESS EXCLUSIVE lock and refuses populated cancellation history, preserving schema/history atomically. Empty rollback drops only incoming cancellation storage/indexes with RESTRICT and preserves outgoing cancellations, all original instruments and financial domains. Coordinate reader rollback before dropping their required table. Do not remove production history to force rollback; use a corrective migration. No dependency or setting is added.
 
+## Outgoing instrument settlement links
+
+`00018_create_payable_instrument_settlements.sql` adds immutable link history between outgoing checks and existing payable allocations. It adds unique `(organization_id,id,payable_id,currency)` reference keys to both parent tables, then restricted composite FKs from each link to enforce matching tenant/payable/currency. Positive BIGINT IRR amounts, native ID/time defaults, creator references, organization/key uniqueness, instrument/creation/ID pagination and allocation/creator indexes follow existing patterns. No prior migration or parent values are edited.
+
+The API enforces aggregate historical capacities for each check and allocation using exact NUMERIC sums. It locks membership, then the payment-recognition key shared with allocations/full voids, then the instrument key shared with outgoing cancellation. Fresh statements after waits enforce capacity and cancellation exclusion. Links survive expense voids and keep their historical capacity; voids still reopen debt solely through existing allocation recognition. Outgoing cancellation rejects any stored link history. Native constraints do not enforce aggregate/lifecycle rules: privileged SQL must cooperate with the same locks and invariants.
+
+Apply schema/grants before deploying writers. Settlement writers require link SELECT/INSERT, instrument/allocation/cancellation/reversal SELECT and existing authentication/membership locking permissions. Outgoing cancellation writers additionally require settlement SELECT. Link reads need SELECT and existing authentication; list also reads instruments and locks membership. No financial UPDATE/DELETE or dependency/configuration change is required. Upgrade or drain all older outgoing cancellation writers before settlement traffic; they lack the shared lock/history check. Incoming SQL/status remains independent.
+
+Rollback locks link storage and refuses populated history atomically. Empty rollback drops only the new table/indexes and the two added parent reference constraints with RESTRICT, preserving populated original records and existing references. Roll back dependent writers before dropping their required storage; never delete production history to force rollback.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00018_add_instrument_settlement_links.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00019_create_receivable_instrument_settlements.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

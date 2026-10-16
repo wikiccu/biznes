@@ -140,6 +140,10 @@ func writeFinanceError(c *gin.Context, err error) {
 		WriteError(c, http.StatusConflict, "conflict", "This instrument exceeds the original payable amount, uses a different currency, or reuses a key with different input.")
 	case errors.Is(err, finance.ErrReceivableInstrumentConflict):
 		WriteError(c, http.StatusConflict, "conflict", "This instrument exceeds the original receivable amount, uses a different currency, or reuses a key with different input.")
+	case errors.Is(err, finance.ErrInstrumentSettlementConflict):
+		WriteError(c, http.StatusConflict, "conflict", "This settlement exceeds available amounts, uses an ineligible allocation or instrument, or reuses a key with different input.")
+	case errors.Is(err, finance.ErrInstrumentHasSettlements):
+		WriteError(c, http.StatusConflict, "conflict", "This instrument has settlement history and cannot be canceled.")
 	case errors.Is(err, finance.ErrInstrumentCancellationConflict):
 		WriteError(c, http.StatusConflict, "conflict", "This instrument is already canceled or the key was used with different cancellation input.")
 	case errors.Is(err, finance.ErrUnavailable):
