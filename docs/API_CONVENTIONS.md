@@ -1,6 +1,6 @@
 # API conventions
 
-This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, outgoing payable and incoming receivable instruments, outgoing/incoming instrument cancellation history, outgoing/incoming settlement attribution links, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
+This is the contract for business endpoints introduced under `/api/v1`. The executable implements identity/session routes, membership-scoped organization/contact/transaction-category/financial-account/transaction routes with pagination and account/occurred-period filters, linked full reversal routes, recorded account activity, scoped customer receivables and supplier payables, receipt/payment allocations, exact collection/payment summaries, receivable/payable aging, upcoming unpaid payables and uncollected receivables, outgoing payable and incoming receivable instruments, outgoing/incoming instrument cancellation history, outgoing/incoming settlement attribution links, outgoing settlement summaries, health/readiness, and shared routing/recovery errors. `/api/v1` itself is not an endpoint. Handlers implement strict input validation and explicit success DTOs.
 
 ## Routes and responses
 
@@ -841,6 +841,36 @@ Migration 00019 adds `receivable_instrument_settlements`, native constraints/ind
 Incoming writers need incoming settlement SELECT/INSERT, incoming instrument/allocation/cancellation/reversal SELECT and existing authentication/membership locking grants. Get needs incoming settlement/membership SELECT plus authentication; list additionally reads the instrument and locks membership. Updated incoming cancellation writers now also need incoming settlement SELECT. No outgoing table, receivable/transaction/account SELECT or financial UPDATE/DELETE is needed. Original status readers and outgoing endpoints have no incoming-settlement dependency. Missing/denied required storage fails closed with safe 503 and recovers when restored.
 
 Apply 00019 and grants before deploying writers; upgrade or drain every older incoming cancellation writer before enabling incoming settlement traffic. Older writers do not share the new lock/history exclusion. Empty rollback requires coordinated writer rollback and removes only the new table/indexes and added parent reference keys. Populated rollback atomically refuses to remove history. No dependency, setting, bank verification, correction/undo or actual deposit/clearance action is added.
+
+## Outgoing instrument settlement summary
+
+`GET /api/v1/organizations/:organization_id/payable-instruments/:instrument_id/settlement-summary` returns one current summary of recorded outgoing settlement attribution. Every current organization member, including staff, may read it. Send no query parameters or body; there are no date, status, currency or pagination selectors. Canonical organization/instrument IDs and existing authentication guards apply. Unknown or inaccessible instruments use generic 404; unsupported methods, including HEAD/OPTIONS, use 405 with Allow: GET.
+
+```json
+{
+  "data": {
+    "organization_id": "d0271b74-6436-4320-a529-77027bd9d3c2",
+    "instrument_id": "b9d8d7dc-91fc-43c4-b6f1-497dbda2125a",
+    "currency": "IRR",
+    "amount": "1000",
+    "linked_amount": "600",
+    "recognized_amount": "400",
+    "voided_amount": "200",
+    "unlinked_amount": "400",
+    "basis": "recorded_settlement_links"
+  }
+}
+```
+
+These nine fields are explicit. All five money values are exact whole-Rial decimal strings. `amount` is the original instrument amount; `linked_amount` sums all its historical links; `recognized_amount` sums only linked portions whose allocation's expense payment has no full reversal; `voided_amount` is linked minus recognized; `unlinked_amount` is original minus linked. A full payment void removes only its linked portion from recognized attribution, preserving history and unlinked amount. An allocation partly attributed to multiple instruments contributes only each instrument's own portions. Zero-link instruments return zero linked/recognized/voided amounts, including canceled originals.
+
+Unlinked amount is a historical arithmetic difference, not permission to submit another link. Canceled instruments still reject new links. Recognized amount describes attribution to unreversed recorded payments; it does not verify check clearance, account cash or payable outstanding. Existing allocation/payment-summary/full-void rules remain authoritative for debt and cash recognition. All recorded allocations count regardless of original payment occurred date, including future dates; this is a current statement snapshot without a historical cutoff claim.
+
+One member-scoped SQL statement reads the original, links, allocations, cancellation history and payment reversals. Native NUMERIC sums preserve exact values and avoid BIGINT aggregate overflow. The read fails closed with safe 503 if historical links exceed the instrument amount, any referenced allocation is over-attributed across instruments (including voided links), or cancellation coexists with linked history. The shared-allocation check covers all links to a selected allocation within the organization, without rejecting unrelated instruments for unrelated corruption. Native reference/positive-amount constraints remain required.
+
+The route needs financial SELECT on outgoing instruments, settlement links, payable allocations, outgoing cancellations and transaction reversals, plus existing authentication/session/membership permissions. It requires no financial writes, membership row-lock grant, or SELECT on original transactions, payables, accounts or incoming storage. Existing schema through 00019 and its instrument/allocation indexes suffice. Missing/denied required storage and the five-second/request-cancellation deadline use safe 503 and recover when the dependency returns. Request IDs, no-store headers and private structured logs follow existing conventions. Separate requests can observe later commits; every summary's fields share one snapshot.
+
+No migration, dependency, setting, cached balance, writer protocol change, new financial recognition or incoming summary route is added. Original metadata/status, settlement retry/history and cancellation behavior remain governed by the existing contracts.
 ## Pagination
 
 List endpoints use `page` and `limit` initially:

@@ -18,6 +18,10 @@ type InstrumentSettlement struct {
 
 type InstrumentSettlementInput struct{ IdempotencyKey, AllocationID, Amount string }
 
+type InstrumentSettlementSummary struct {
+	OrganizationID, InstrumentID, Currency, Amount, LinkedAmount, RecognizedAmount, VoidedAmount, UnlinkedAmount string
+}
+
 var (
 	ErrInstrumentSettlementConflict = errors.New("instrument settlement conflicts with allocation, capacity, cancellation, or retry input")
 	ErrInstrumentHasSettlements     = errors.New("instrument has settlement history")
@@ -206,4 +210,37 @@ func (s *Service) ListPayableInstrumentSettlements(ctx context.Context, userID, 
 		return nil, ErrUnavailable
 	}
 	return items, nil
+}
+
+func (s *Service) GetPayableInstrumentSettlementSummary(ctx context.Context, userID, organizationID, instrumentID string) (InstrumentSettlementSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var item InstrumentSettlementSummary
+	var valid bool
+	err := s.pool.QueryRow(ctx, `SELECT i.organization_id, i.id, i.currency, i.amount::text,
+		totals.linked::text, totals.recognized::text, (totals.linked - totals.recognized)::text,
+		(i.amount - totals.linked)::text, totals.linked <= i.amount AND totals.allocations_valid
+		AND (totals.linked = 0 OR NOT EXISTS (SELECT 1 FROM biznes.payable_instrument_cancellations c
+			WHERE c.organization_id = i.organization_id AND c.instrument_id = i.id))
+		FROM biznes.payable_instruments i JOIN biznes.memberships m ON m.organization_id = i.organization_id
+		CROSS JOIN LATERAL (
+			SELECT COALESCE(SUM(s.amount), 0) AS linked,
+				COALESCE(SUM(s.amount) FILTER (WHERE NOT EXISTS (SELECT 1 FROM biznes.transaction_reversals v
+					WHERE v.organization_id = a.organization_id AND v.transaction_id = a.transaction_id)), 0) AS recognized,
+				COALESCE(BOOL_AND(a.amount >= (SELECT COALESCE(SUM(other.amount), 0)
+					FROM biznes.payable_instrument_settlements other
+					WHERE other.organization_id = a.organization_id AND other.allocation_id = a.id)), true) AS allocations_valid
+			FROM biznes.payable_instrument_settlements s JOIN biznes.payable_allocations a
+				ON a.organization_id = s.organization_id AND a.id = s.allocation_id
+			WHERE s.organization_id = i.organization_id AND s.instrument_id = i.id
+		) totals WHERE i.organization_id = $1 AND i.id = $2 AND m.user_id = $3`, organizationID, instrumentID, userID).
+		Scan(&item.OrganizationID, &item.InstrumentID, &item.Currency, &item.Amount, &item.LinkedAmount,
+			&item.RecognizedAmount, &item.VoidedAmount, &item.UnlinkedAmount, &valid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InstrumentSettlementSummary{}, organization.ErrNotFound
+	}
+	if err != nil || !valid {
+		return InstrumentSettlementSummary{}, ErrUnavailable
+	}
+	return item, nil
 }

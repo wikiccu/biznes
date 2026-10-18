@@ -98,6 +98,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	instruments.POST("/:instrument_id/settlements", settleInstrument(financeService, true))
 	instruments.GET("/:instrument_id/settlements", listInstrumentSettlements(financeService, true))
 	instruments.GET("/:instrument_id/settlements/:settlement_id", emptyAuthRequest, getInstrumentSettlement(financeService, true))
+	instruments.GET("/:instrument_id/settlement-summary", emptyAuthRequest, getPayableInstrumentSettlementSummary(financeService))
 	incomingInstruments := organizations.Group("/:organization_id/receivable-instruments")
 	incomingInstruments.POST("", recordInstrument(financeService, false))
 	incomingInstruments.GET("", listInstruments(financeService, false))

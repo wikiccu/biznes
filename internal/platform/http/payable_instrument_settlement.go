@@ -130,3 +130,29 @@ func listInstrumentSettlements(service *finance.Service, payable bool) gin.Handl
 		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"page": page, "limit": limit}})
 	}
 }
+
+func getPayableInstrumentSettlementSummary(service *finance.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		organizationID, ok := organizationID(c)
+		if !ok {
+			return
+		}
+		instrumentID, ok := resourceID(c, "instrument_id")
+		if !ok {
+			return
+		}
+		user := c.MustGet("identity_user").(identity.User)
+		item, err := service.GetPayableInstrumentSettlementSummary(c.Request.Context(), user.ID, organizationID, instrumentID)
+		if err != nil {
+			writeFinanceError(c, err)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"organization_id": item.OrganizationID, "instrument_id": item.InstrumentID, "currency": item.Currency,
+			"amount": item.Amount, "linked_amount": item.LinkedAmount, "recognized_amount": item.RecognizedAmount,
+			"voided_amount": item.VoidedAmount, "unlinked_amount": item.UnlinkedAmount,
+			"basis": "recorded_settlement_links",
+		}})
+	}
+}
