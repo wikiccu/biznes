@@ -98,7 +98,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	instruments.POST("/:instrument_id/settlements", settleInstrument(financeService, true))
 	instruments.GET("/:instrument_id/settlements", listInstrumentSettlements(financeService, true))
 	instruments.GET("/:instrument_id/settlements/:settlement_id", emptyAuthRequest, getInstrumentSettlement(financeService, true))
-	instruments.GET("/:instrument_id/settlement-summary", emptyAuthRequest, getPayableInstrumentSettlementSummary(financeService))
+	instruments.GET("/:instrument_id/settlement-summary", emptyAuthRequest, getInstrumentSettlementSummary(financeService, true))
 	incomingInstruments := organizations.Group("/:organization_id/receivable-instruments")
 	incomingInstruments.POST("", recordInstrument(financeService, false))
 	incomingInstruments.GET("", listInstruments(financeService, false))
@@ -108,6 +108,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	incomingInstruments.POST("/:instrument_id/settlements", settleInstrument(financeService, false))
 	incomingInstruments.GET("/:instrument_id/settlements", listInstrumentSettlements(financeService, false))
 	incomingInstruments.GET("/:instrument_id/settlements/:settlement_id", emptyAuthRequest, getInstrumentSettlement(financeService, false))
+	incomingInstruments.GET("/:instrument_id/settlement-summary", emptyAuthRequest, getInstrumentSettlementSummary(financeService, false))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

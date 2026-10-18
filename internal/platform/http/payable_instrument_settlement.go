@@ -131,7 +131,7 @@ func listInstrumentSettlements(service *finance.Service, payable bool) gin.Handl
 	}
 }
 
-func getPayableInstrumentSettlementSummary(service *finance.Service) gin.HandlerFunc {
+func getInstrumentSettlementSummary(service *finance.Service, payable bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		organizationID, ok := organizationID(c)
 		if !ok {
@@ -142,7 +142,13 @@ func getPayableInstrumentSettlementSummary(service *finance.Service) gin.Handler
 			return
 		}
 		user := c.MustGet("identity_user").(identity.User)
-		item, err := service.GetPayableInstrumentSettlementSummary(c.Request.Context(), user.ID, organizationID, instrumentID)
+		var item finance.InstrumentSettlementSummary
+		var err error
+		if payable {
+			item, err = service.GetPayableInstrumentSettlementSummary(c.Request.Context(), user.ID, organizationID, instrumentID)
+		} else {
+			item, err = service.GetReceivableInstrumentSettlementSummary(c.Request.Context(), user.ID, organizationID, instrumentID)
+		}
 		if err != nil {
 			writeFinanceError(c, err)
 			return
