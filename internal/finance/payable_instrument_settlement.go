@@ -11,9 +11,9 @@ import (
 )
 
 type InstrumentSettlement struct {
-	ID, OrganizationID, IdempotencyKey, InstrumentID, AllocationID, PayableID, Currency, CreatedBy string
-	Amount                                                                                         int64
-	CreatedAt                                                                                      time.Time
+	ID, OrganizationID, IdempotencyKey, InstrumentID, AllocationID, DebtID, Currency, CreatedBy string
+	Amount                                                                                      int64
+	CreatedAt                                                                                   time.Time
 }
 
 type InstrumentSettlementInput struct{ IdempotencyKey, AllocationID, Amount string }
@@ -47,7 +47,7 @@ func validateInstrumentSettlement(input InstrumentSettlementInput) (int64, error
 func scanInstrumentSettlement(row pgx.Row) (InstrumentSettlement, error) {
 	var item InstrumentSettlement
 	err := row.Scan(&item.ID, &item.OrganizationID, &item.IdempotencyKey, &item.InstrumentID,
-		&item.AllocationID, &item.PayableID, &item.Amount, &item.Currency, &item.CreatedBy, &item.CreatedAt)
+		&item.AllocationID, &item.DebtID, &item.Amount, &item.Currency, &item.CreatedBy, &item.CreatedAt)
 	return item, err
 }
 

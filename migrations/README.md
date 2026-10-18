@@ -178,7 +178,7 @@ Rollback locks cancellation storage and refuses any stored history. Empty rollba
 
 Apply 00017 and grant incoming cancellation SELECT before deploying updated incoming readers. Writers additionally require incoming cancellation INSERT and incoming instrument SELECT, plus existing identity/session/membership locking permissions. Original record writers retain their existing insert/parent-read grants. No outgoing-table or financial mutation permission is needed. Upgrade incoming readers before enabling cancellation traffic; earlier readers report recorded rather than canceled for incoming records. Missing/denied storage fails closed with safe 503 while outgoing history/status remains independent.
 
-Incoming get/list/record retries now derive recorded/canceled from same-tenant incoming cancellation EXISTS in their statement snapshot. Metadata, receipts, collection allocations, reversals and financial reports remain unchanged. Recording intent establishes no bank, custody, deposit or cash effect.
+Incoming get/list/record retries now derive recorded/canceled from same-tenant incoming cancellation EXISTS in their statement snapshot. Metadata, receipts, collection allocations, reversals and financial reports remain unchanged. Since 00019, incoming cancellation writers also require incoming settlement SELECT and share its instrument lock/history exclusion described below. Recording intent establishes no bank, custody, deposit or cash effect.
 
 Rollback takes an ACCESS EXCLUSIVE lock and refuses populated cancellation history, preserving schema/history atomically. Empty rollback drops only incoming cancellation storage/indexes with RESTRICT and preserves outgoing cancellations, all original instruments and financial domains. Coordinate reader rollback before dropping their required table. Do not remove production history to force rollback; use a corrective migration. No dependency or setting is added.
 
@@ -192,9 +192,19 @@ Apply schema/grants before deploying writers. Settlement writers require link SE
 
 Rollback locks link storage and refuses populated history atomically. Empty rollback drops only the new table/indexes and the two added parent reference constraints with RESTRICT, preserving populated original records and existing references. Roll back dependent writers before dropping their required storage; never delete production history to force rollback.
 
+## Incoming instrument settlement links
+
+`00019_create_receivable_instrument_settlements.sql` mirrors 00018 for incoming checks and receivable collection allocations. Added unique `(organization_id,id,receivable_id,currency)` keys on both incoming parents support restricted composite FKs enforcing shared tenant/receivable/currency. Native positive BIGINT IRR amounts, IDs/time/creator history, organization/key uniqueness and instrument/allocation/creator indexes follow existing storage patterns. Prior migration files, outgoing settlement history and financial values remain intact.
+
+Exact NUMERIC sums and cooperating application locks bound historical amounts to both original check and allocation capacity. Lock order is membership, existing receipt-recognition key, incoming instrument key; incoming cancellation shares the last lock and rejects any settlement history. Full receipt voids preserve history/capacity while existing collection recognition reopens debt. Privileged SQL must follow the same aggregate/lifecycle rules and lock order.
+
+Apply 00019 and grants before deploying. Incoming settlement writers require incoming link SELECT/INSERT, incoming instrument/allocation/cancellation/reversal SELECT and existing authentication/membership locks. Updated incoming cancellation writers also require incoming link SELECT. Link get needs only link/membership SELECT plus authentication; list also reads instruments and locks membership. Outgoing storage, financial UPDATE/DELETE and new dependencies/settings are unnecessary. Upgrade or drain all older incoming cancellation writers before enabling incoming settlement traffic.
+
+Rollback locks the new table and refuses populated link history atomically. Empty rollback drops only that table/indexes and its added reference keys with RESTRICT, retaining populated original parents, outgoing links and all previous references. Coordinate dependent writer rollback before dropping the required table; never delete production history to force rollback.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00019_create_receivable_instrument_settlements.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00020_add_finance_indexes.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up
