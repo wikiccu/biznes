@@ -63,6 +63,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	accounts.GET("/:account_id", emptyAuthRequest, getAccount(financeService))
 	accounts.PATCH("/:account_id", saveAccount(financeService, true))
 	accounts.GET("/:account_id/recorded-activity", getAccountActivity(financeService))
+	accounts.GET("/:account_id/recorded-balance", getAccountBalance(financeService))
 	accounts.POST("/:account_id/opening-balance", recordAccountOpeningBalance(financeService))
 	accounts.GET("/:account_id/opening-balance", emptyAuthRequest, getAccountOpeningBalance(financeService))
 	transactions := organizations.Group("/:organization_id/transactions")
