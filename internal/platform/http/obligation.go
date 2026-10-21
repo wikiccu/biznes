@@ -21,11 +21,12 @@ type publicObligation struct {
 	Description    string    `json:"description"`
 	CreatedBy      string    `json:"created_by"`
 	CreatedAt      time.Time `json:"created_at"`
+	Status         string    `json:"status"`
 }
 
 func obligationDTO(item finance.Obligation) publicObligation {
 	return publicObligation{item.ID, item.OrganizationID, item.IdempotencyKey, item.Title,
-		strconv.FormatInt(item.Amount, 10), item.Currency, item.DueDate.Format(time.DateOnly), item.Description, item.CreatedBy, item.CreatedAt.UTC()}
+		strconv.FormatInt(item.Amount, 10), item.Currency, item.DueDate.Format(time.DateOnly), item.Description, item.CreatedBy, item.CreatedAt.UTC(), item.Status}
 }
 
 func recordObligation(service *finance.Service) gin.HandlerFunc {

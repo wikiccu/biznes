@@ -116,6 +116,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	obligations.POST("", recordObligation(financeService))
 	obligations.GET("", listObligations(financeService))
 	obligations.GET("/:obligation_id", emptyAuthRequest, getObligation(financeService))
+	obligations.POST("/:obligation_id/cancellation", cancelObligation(financeService))
+	obligations.GET("/:obligation_id/cancellation", emptyAuthRequest, getObligationCancellation(financeService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

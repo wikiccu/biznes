@@ -11,9 +11,9 @@ import (
 )
 
 type Obligation struct {
-	ID, OrganizationID, IdempotencyKey, Title, Currency, Description, CreatedBy string
-	Amount                                                                      int64
-	DueDate, CreatedAt                                                          time.Time
+	ID, OrganizationID, IdempotencyKey, Title, Currency, Description, CreatedBy, Status string
+	Amount                                                                              int64
+	DueDate, CreatedAt                                                                  time.Time
 }
 
 type ObligationInput struct{ IdempotencyKey, Title, Amount, Currency, DueDate, Description string }
@@ -57,7 +57,7 @@ func validateObligation(input ObligationInput) (ObligationInput, int64, time.Tim
 func scanObligation(row pgx.Row) (Obligation, error) {
 	var item Obligation
 	err := row.Scan(&item.ID, &item.OrganizationID, &item.IdempotencyKey, &item.Title,
-		&item.Amount, &item.Currency, &item.DueDate, &item.Description, &item.CreatedBy, &item.CreatedAt)
+		&item.Amount, &item.Currency, &item.DueDate, &item.Description, &item.CreatedBy, &item.CreatedAt, &item.Status)
 	return item, err
 }
 
@@ -84,13 +84,19 @@ func (s *Service) RecordObligation(ctx context.Context, userID, organizationID s
 		(organization_id, idempotency_key, title, amount, currency, due_date, description, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (organization_id, idempotency_key) DO NOTHING
-		RETURNING id, organization_id, idempotency_key, title, amount, currency, due_date, description, created_by, created_at`,
+		RETURNING id, organization_id, idempotency_key, title, amount, currency, due_date, description, created_by, created_at,
+		CASE WHEN EXISTS (SELECT 1 FROM biznes.financial_obligation_cancellations c
+			WHERE c.organization_id = financial_obligations.organization_id AND c.obligation_id = financial_obligations.id)
+			THEN 'canceled' ELSE 'recorded' END`,
 		organizationID, input.IdempotencyKey, input.Title, amount, input.Currency, dueDate, input.Description, userID))
 	created := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A fresh statement sees the winner after a concurrent ON CONFLICT wait.
 		item, err = scanObligation(tx.QueryRow(ctx, `SELECT id, organization_id, idempotency_key, title,
-			amount, currency, due_date, description, created_by, created_at
+			amount, currency, due_date, description, created_by, created_at,
+			CASE WHEN EXISTS (SELECT 1 FROM biznes.financial_obligation_cancellations c
+				WHERE c.organization_id = financial_obligations.organization_id AND c.obligation_id = financial_obligations.id)
+				THEN 'canceled' ELSE 'recorded' END
 			FROM biznes.financial_obligations WHERE organization_id = $1 AND idempotency_key = $2`, organizationID, input.IdempotencyKey))
 		if err == nil && (item.Title != input.Title || item.Amount != amount || item.Currency != input.Currency ||
 			!item.DueDate.Equal(dueDate) || item.Description != input.Description) {
@@ -114,7 +120,10 @@ func (s *Service) GetObligation(ctx context.Context, userID, organizationID, obl
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	item, err := scanObligation(s.pool.QueryRow(ctx, `SELECT o.id, o.organization_id, o.idempotency_key, o.title,
-		o.amount, o.currency, o.due_date, o.description, o.created_by, o.created_at
+		o.amount, o.currency, o.due_date, o.description, o.created_by, o.created_at,
+		CASE WHEN EXISTS (SELECT 1 FROM biznes.financial_obligation_cancellations c
+			WHERE c.organization_id = o.organization_id AND c.obligation_id = o.id)
+			THEN 'canceled' ELSE 'recorded' END
 		FROM biznes.financial_obligations o JOIN biznes.memberships m ON m.organization_id = o.organization_id
 		WHERE o.organization_id = $1 AND o.id = $2 AND m.user_id = $3`, organizationID, obligationID, userID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -141,7 +150,10 @@ func (s *Service) ListObligations(ctx context.Context, userID, organizationID st
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `SELECT id, organization_id, idempotency_key, title,
-		amount, currency, due_date, description, created_by, created_at
+		amount, currency, due_date, description, created_by, created_at,
+		CASE WHEN EXISTS (SELECT 1 FROM biznes.financial_obligation_cancellations c
+			WHERE c.organization_id = financial_obligations.organization_id AND c.obligation_id = financial_obligations.id)
+			THEN 'canceled' ELSE 'recorded' END
 		FROM biznes.financial_obligations WHERE organization_id = $1 ORDER BY created_at, id LIMIT $2 OFFSET $3`,
 		organizationID, limit, (page-1)*limit)
 	if err != nil {
