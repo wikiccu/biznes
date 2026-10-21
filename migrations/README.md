@@ -208,9 +208,15 @@ Rollback locks the new table and refuses populated link history atomically. Empt
 
 Apply before deploying the routes. The API needs account_opening_balances SELECT/INSERT, financial_accounts SELECT, and existing identity/membership grants (including membership UPDATE for write row locks). Reads need no financial writes or membership locks. Withhold opening UPDATE/DELETE: API/privileges enforce immutability, without a trigger. Unique constraints plus a fresh read after INSERT contention preserve retries without account/advisory locks. No dependency, setting or transaction-writer upgrade is needed. Rollback locks the new table and refuses any stored opening, retaining schema/data/history; empty rollback drops only this table/indexes with RESTRICT. Never delete financial history to force rollback or repair an opening; corrections need a future explicit workflow.
 
+## General financial obligations
+
+`00021_create_financial_obligations.sql` creates standalone outgoing commitment records with native UUID identity, a composite tenant/resource key, organization-scoped retry-key uniqueness, bounded/control-free title, positive whole-Rial BIGINT amount, explicit IRR, finite date-only due date, bounded multiline description and creator/time provenance. Restricted organization/creator references and indexes preserve ownership/history; creation-time/ID indexing supports stable listing. Titles are not unique. The table has no account/contact/instrument dependencies or financial recognition effects. Applying it to populated prior domains adds no defaults or financial rewrites.
+
+Deploy this explicit migration before the new routes. The API needs financial_obligations SELECT/INSERT plus existing identity/membership access, including membership UPDATE for write/list row locks. Single GET needs only financial SELECT and current membership. Withhold obligation UPDATE/DELETE; API and privileges enforce immutability without a trigger. Retry handling uses native INSERT/ON CONFLICT plus a fresh read, without extra advisory locks or other financial-domain permissions. Rollback locks the table and refuses any stored commitment, retaining schema/data/history; empty rollback drops only this table/indexes with RESTRICT. Never remove production records to force rollback. No dependency, setting or existing writer upgrade is introduced.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00021_add_finance_indexes.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00022_add_finance_indexes.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up

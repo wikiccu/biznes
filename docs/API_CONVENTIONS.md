@@ -923,6 +923,33 @@ Incoming SQL separately reads the scoped original, incoming links, receivable al
 The summary needs incoming instrument/link/allocation/cancellation SELECT and shared transaction-reversal SELECT, plus existing identity/session/membership permissions. No financial write, membership row-lock grant, original transaction/receivable/account SELECT or outgoing storage access is needed. Outgoing queries and family-specific permissions remain independent; both reports require the shared reversal table. Missing/denied dependencies and deadline failures return safe 503 and recover when restored. Unknown/inaccessible instruments use generic 404; unsupported methods, including HEAD/OPTIONS, use 405 with Allow: GET. Separate requests may observe later commits; one response's fields share one snapshot.
 
 The concrete summary fields, scanning/error mapping and HTTP response are shared without changing outgoing wire fields or SQL. Schema remains 00019 with existing indexes; no migration, dependency, setting, cached balance, writer protocol change or new collection/cash recognition is added.
+## General financial obligations
+
+Apply migration `00021_create_financial_obligations.sql` before using `/api/v1/organizations/:organization_id/financial-obligations`. `POST` records a standalone, one-time outgoing commitment, `GET` lists original records, and `GET /:obligation_id` retrieves one. Owner/admin/accountant members can record; every current member can read. All lookups include the organization and authenticated membership. Unknown/inaccessible resources return the same safe `404`; staff writes return `403`.
+
+POST accepts the existing strict 8 KiB UTF-8 JSON/string-only contract, without query parameters:
+
+```json
+{
+  "idempotency_key": "12345678-1234-4234-8234-123456789abc",
+  "title": "October office rent",
+  "amount": "50000000",
+  "currency": "IRR",
+  "due_date": "2026-10-31",
+  "description": "One-time commitment from the rental agreement"
+}
+```
+
+All fields except `description` are required. The title uses the existing name rules: trim surrounding Unicode whitespace, require 1–120 code points and reject controls before trimming; Persian and zero-width non-joiners are preserved. Titles need not be unique. Amounts are positive whole-Rial decimal strings from `1` through `9223372036854775807`; zero, signs, whitespace, fractions, exponents, leading zeroes and non-ASCII digits are invalid. Currency must be explicit `IRR`. Due dates are real Gregorian `YYYY-MM-DD` dates in years 1–9999, stored as DATE without a guessed timezone or Jalali conversion. Optional descriptions default to empty, preserve whitespace/LF/CR/tab, and use the existing 2000-code-point/control validation. Keys are canonical lowercase UUIDs. Missing/invalid values return safe `422`; shared JSON/media/path/auth errors apply.
+
+First creation returns `201`, matching normalized retries `200`, with the original ten-field DTO: `id`, `organization_id`, `idempotency_key`, `title`, `amount` (exact string), `currency`, `due_date` (date only), `description`, `created_by`, and `created_at` (UTC). Both include the child retrieval `Location` and `Cache-Control: no-store`. The key is unique per organization within general obligations, independently of all other financial operations. Retries compare trimmed title, amount, currency, due date and exact description, preserving the initial creator/time across members, replicas and restarts. Changed input with an existing key returns safe `409`. Native uniqueness plus a fresh statement after INSERT contention enforces these rules concurrently; a different key can deliberately record another commitment with the same title.
+
+List uses the shared `page`/`limit` contract (defaults 1/20, maximum 10000/100), ordered by creation time then ID, and returns `data: []` for an empty page plus page/limit metadata. Only those two selectors are accepted. Single retrieval accepts no body/query and returns the same DTO. List and POST hold current membership through transaction completion; single GET checks it in one statement without a row lock. Responses are no-store. Dependency/permission failures, five-second deadlines and request cancellation fail closed with safe `503` when a response remains possible. Unsupported methods return `405`; collection `Allow` lists GET/POST, while item `Allow` is GET.
+
+These are recorded commitments without contact/account/check requirements, paid/outstanding/overdue status, or settlement recognition. Recording or reading them creates no transaction, expense, supplier payable, allocation, reservation or cash movement. Existing recorded balances, activity and debt/check reports remain unchanged and exclude this separate record family. There is no automatic deduplication or combined total across obligations, payables and instruments; use the appropriate existing domain for a commitment already represented there. Edits/deletion, cancellation, recurrence, payment links, due-date filters/upcoming views and reminders remain separate increments. No lifecycle state or paid balance should be inferred from these immutable original records.
+
+The API needs financial_obligations SELECT/INSERT and existing identity/membership access; list/write row locking also needs membership UPDATE. Single GET works with financial SELECT only. Withhold financial_obligations UPDATE/DELETE; API/privileges enforce immutability without a trigger. No other financial-domain access is required for these routes.
+
 ## Pagination
 
 List endpoints use `page` and `limit` initially:

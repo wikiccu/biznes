@@ -112,6 +112,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	incomingInstruments.GET("/:instrument_id/settlements", listInstrumentSettlements(financeService, false))
 	incomingInstruments.GET("/:instrument_id/settlements/:settlement_id", emptyAuthRequest, getInstrumentSettlement(financeService, false))
 	incomingInstruments.GET("/:instrument_id/settlement-summary", emptyAuthRequest, getInstrumentSettlementSummary(financeService, false))
+	obligations := organizations.Group("/:organization_id/financial-obligations")
+	obligations.POST("", recordObligation(financeService))
+	obligations.GET("", listObligations(financeService))
+	obligations.GET("/:obligation_id", emptyAuthRequest, getObligation(financeService))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
