@@ -124,6 +124,8 @@ func writeFinanceError(c *gin.Context, err error) {
 		WriteError(c, http.StatusConflict, "conflict", "A category with this name and kind already exists.")
 	case errors.Is(err, finance.ErrAccountConflict):
 		WriteError(c, http.StatusConflict, "conflict", "An account with this name already exists.")
+	case errors.Is(err, finance.ErrAccountOpeningBalanceConflict):
+		WriteError(c, http.StatusConflict, "conflict", "This account already has an opening balance or the key was used with different opening input.")
 	case errors.Is(err, finance.ErrTransactionConflict):
 		WriteError(c, http.StatusConflict, "conflict", "This idempotency key was already used with different transaction input.")
 	case errors.Is(err, finance.ErrReversalConflict):

@@ -202,9 +202,15 @@ Apply 00019 and grants before deploying. Incoming settlement writers require inc
 
 Rollback locks the new table and refuses populated link history atomically. Empty rollback drops only that table/indexes and its added reference keys with RESTRICT, retaining populated original parents, outgoing links and all previous references. Coordinate dependent writer rollback before dropping the required table; never delete production history to force rollback.
 
+## Account opening balances
+
+`00020_create_account_opening_balances.sql` adds one immutable opening per organization/account, organization-scoped retry-key uniqueness, native identity, signed whole-Rial `BIGINT` amount (including zero and both signed bounds), explicit IRR, finite UTC-range `effective_at`, bounded/control-free source reason and creator/time provenance. A restricted composite account/currency FK reuses the existing reference key; the creator FK has an index. Populated accounts/history receive no defaults or financial rewrites. Opening means immediately before `effective_at`; subsequent activity begins inclusively by occurred time, independently of creation time. Existing recognition is unchanged.
+
+Apply before deploying the routes. The API needs account_opening_balances SELECT/INSERT, financial_accounts SELECT, and existing identity/membership grants (including membership UPDATE for write row locks). Reads need no financial writes or membership locks. Withhold opening UPDATE/DELETE: API/privileges enforce immutability, without a trigger. Unique constraints plus a fresh read after INSERT contention preserve retries without account/advisory locks. No dependency, setting or transaction-writer upgrade is needed. Rollback locks the new table and refuses any stored opening, retaining schema/data/history; empty rollback drops only this table/indexes with RESTRICT. Never delete financial history to force rollback or repair an opening; corrections need a future explicit workflow.
+
 ## Adding a migration
 
-Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00020_add_finance_indexes.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
+Create the next file directly in this directory using a unique, increasing five-digit version and descriptive English snake_case name, for example `00021_add_finance_indexes.sql`. Keep the same numbering convention and resolve version collisions before applying migrations. Add meaningful SQL under the Goose annotations:
 
 ```sql
 -- +goose Up
