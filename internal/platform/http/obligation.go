@@ -103,3 +103,36 @@ func listObligations(service *finance.Service) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"page": page, "limit": limit}})
 	}
 }
+
+func listUpcomingObligations(service *finance.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		organizationID, ok := organizationID(c)
+		if !ok {
+			return
+		}
+		query, ok := queryInput(c, "page", "limit", "due_from", "due_to")
+		if !ok {
+			return
+		}
+		page, limit, ok := paginationValues(c, query)
+		if !ok {
+			return
+		}
+		user := c.MustGet("identity_user").(identity.User)
+		items, err := service.ListUpcomingObligations(c.Request.Context(), user.ID, organizationID, page, limit,
+			finance.DueDateRange{From: query.Get("due_from"), To: query.Get("due_to")})
+		if err != nil {
+			writeFinanceError(c, err)
+			return
+		}
+		data := make([]publicObligation, 0, len(items))
+		for _, item := range items {
+			data = append(data, obligationDTO(item))
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{
+			"organization_id": organizationID, "page": page, "limit": limit,
+			"due_from": query.Get("due_from"), "due_to": query.Get("due_to"), "basis": "recorded_uncanceled_commitments",
+		}})
+	}
+}

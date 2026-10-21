@@ -115,6 +115,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxp
 	obligations := organizations.Group("/:organization_id/financial-obligations")
 	obligations.POST("", recordObligation(financeService))
 	obligations.GET("", listObligations(financeService))
+	obligations.GET("/upcoming", listUpcomingObligations(financeService))
 	obligations.GET("/:obligation_id", emptyAuthRequest, getObligation(financeService))
 	obligations.POST("/:obligation_id/cancellation", cancelObligation(financeService))
 	obligations.GET("/:obligation_id/cancellation", emptyAuthRequest, getObligationCancellation(financeService))
